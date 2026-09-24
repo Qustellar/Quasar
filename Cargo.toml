@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/qst-core",
+    "crates/qst-ecs",
+    "crates/qst-asset",
+    "crates/qst-scene",
+    "crates/qst-physics",
+    "crates/qst-render",
+    "crates/qst-audio",
+    "crates/qst-editor",
+    "crates/qst-engine",
+    "playground",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+bevy_ecs = "0.19.1"
+bytemuck = { version = "1", features = ["derive"] }
+egui = "0.33"
+egui-wgpu = "0.33"
+egui-winit = "0.33"
+gltf = "1.4"
+glam = { version = "0.30", features = ["serde"] }
+notify = "8"
+rapier3d = "0.35"
+ron = "0.10"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+wgpu = "27"
+winit = "0.30"

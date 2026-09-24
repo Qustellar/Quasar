@@ -1,0 +1,9 @@
+[package]
+name = "qst-ecs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bevy_ecs.workspace = true
+qst-core = { path = "../qst-core" }

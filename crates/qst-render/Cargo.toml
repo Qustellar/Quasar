@@ -1,0 +1,15 @@
+[package]
+name = "qst-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytemuck.workspace = true
+qst-core = { path = "../qst-core" }
+tracing.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+pollster = "0.4"

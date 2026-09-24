@@ -1,0 +1,105 @@
+(
+    schema_version: 1,
+    name: "playground",
+    source_gltf: Some("playground.gltf"),
+    entities: [
+        (
+            name: "Cube",
+            parent: None,
+            transform: (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+            ),
+            mesh: None,
+            camera: None,
+            light: None,
+            collider: None,
+        ),
+        (
+            name: "Falling Box",
+            parent: Some(0),
+            transform: (
+                translation: (0.0, 3.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+            ),
+            mesh: Some((
+                mesh: "gltf_mesh_0_0",
+                material: "gltf_mesh_0_0",
+            )),
+            camera: None,
+            light: None,
+            collider: Some((
+                half_extents: (0.5, 0.5, 0.5),
+                dynamic: true,
+            )),
+        ),
+        (
+            name: "Floor",
+            parent: None,
+            transform: (
+                translation: (0.0, -0.5, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (12.0, 1.0, 12.0),
+            ),
+            mesh: Some((
+                mesh: "gltf_mesh_1_0",
+                material: "gltf_mesh_1_0",
+            )),
+            camera: None,
+            light: None,
+            collider: Some((
+                half_extents: (6.0, 0.5, 6.0),
+                dynamic: false,
+            )),
+        ),
+        (
+            name: "Camera",
+            parent: Some(5),
+            transform: (
+                translation: (0.0, 3.0, 10.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+            ),
+            mesh: None,
+            camera: Some((
+                fov_y_radians: 1.0471976,
+                near: 0.1,
+                far: 100.0,
+            )),
+            light: None,
+            collider: None,
+        ),
+        (
+            name: "Sun",
+            parent: None,
+            transform: (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+            ),
+            mesh: None,
+            camera: None,
+            light: Some((
+                direction: (0.0, -1.0, 0.0),
+                color: (1.0, 1.0, 1.0),
+                intensity: 1.0,
+            )),
+            collider: None,
+        ),
+        (
+            name: "Camera Rig",
+            parent: Some(0),
+            transform: (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+                scale: (1.0, 1.0, 1.0),
+            ),
+            mesh: None,
+            camera: None,
+            light: None,
+            collider: None,
+        ),
+    ],
+)

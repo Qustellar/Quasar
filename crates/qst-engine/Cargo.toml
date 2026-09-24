@@ -1,0 +1,28 @@
+[package]
+name = "qst-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+editor = ["dep:qst-editor"]
+tracy = ["dep:tracing-tracy"]
+
+[dependencies]
+qst-asset = { path = "../qst-asset" }
+qst-audio = { path = "../qst-audio" }
+qst-core = { path = "../qst-core" }
+qst-ecs = { path = "../qst-ecs" }
+qst-physics = { path = "../qst-physics" }
+qst-render = { path = "../qst-render" }
+qst-scene = { path = "../qst-scene" }
+qst-editor = { path = "../qst-editor", optional = true }
+pollster = "0.4"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tracy = { version = "0.12", optional = true }
+winit.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

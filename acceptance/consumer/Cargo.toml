@@ -1,0 +1,10 @@
+[package]
+name = "quasar-consumer-acceptance"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[workspace]
+
+[dependencies]
+qst-engine = { path = "../../crates/qst-engine" }

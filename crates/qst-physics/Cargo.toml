@@ -1,0 +1,11 @@
+[package]
+name = "qst-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+qst-core = { path = "../qst-core" }
+qst-ecs = { path = "../qst-ecs" }
+qst-scene = { path = "../qst-scene" }
+rapier3d.workspace = true

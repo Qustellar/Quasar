@@ -1,0 +1,18 @@
+[package]
+name = "qst-scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bevy_ecs.workspace = true
+gltf.workspace = true
+qst-asset = { path = "../qst-asset" }
+qst-core = { path = "../qst-core" }
+qst-ecs = { path = "../qst-ecs" }
+ron.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+serde_json = "1"
