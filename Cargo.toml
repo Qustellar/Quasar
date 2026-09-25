@@ -17,6 +17,8 @@ members = [
 edition = "2024"
 version = "0.1.0"
 rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/Qustellar/Quasar"
 
 [workspace.dependencies]
 bevy_ecs = "0.19.1"

@@ -21,7 +21,7 @@ Scene entities can form a parent-child hierarchy. Schema 1 stores world transfor
 
 ## Status
 
-The Phase 1 local acceptance is recorded in [Phase 1 acceptance](docs/phase-1-acceptance.md). It covers timing, transforms, handle invalidation, scene serialization, glTF import, physics, mesh/material hot reload, saved-scene resource restoration, GPU pixels, and the independent consumer. Editor selection, parent transform editing, pause, save, and scene reopening were exercised in a Windows window. CI has not run because no remote repository has been created yet. Broader glTF variants and file writers remain compatibility work beyond this baseline.
+The Phase 1 local acceptance is recorded in [Phase 1 acceptance](docs/phase-1-acceptance.md). It covers timing, transforms, handle invalidation, scene serialization, glTF import, physics, mesh/material hot reload, saved-scene resource restoration, GPU pixels, and the independent consumer. Editor selection, parent transform editing, pause, save, and scene reopening were exercised in a Windows window. GitHub Actions is configured; CI has not run yet. Broader glTF variants and file writers remain compatibility work beyond this baseline.
 
 ## Non-goals
 
@@ -36,3 +36,7 @@ The 1080p playground resident working-set target is below 400 MB (decimal). It i
 The runtime is split into `qst-core`, `qst-ecs`, `qst-asset`, `qst-scene`, `qst-physics`, `qst-render`, `qst-audio`, `qst-editor`, and the public `qst-engine` facade. `playground` is the minimal outside crate.
 
 Architecture decisions are in [ADR 0001](docs/adr/0001-runtime-boundaries.md) and [Architecture](docs/architecture.md).
+
+## License
+
+Quasar is licensed under the [Apache License 2.0](LICENSE).
