@@ -8,7 +8,7 @@ pub enum PlayState {
 
 pub struct EditorPlugin {
     pub play_state: PlayState,
-    pub selected_entity: Option<usize>,
+    pub selected_entity: Option<EntityId>,
     pub step_requested: bool,
     pub save_requested: bool,
 }
@@ -31,7 +31,7 @@ impl EditorPlugin {
         scene: &mut SceneAsset,
         runtime_positions: &[Option<[f32; 3]>],
         diagnostics: &FrameDiagnostics,
-    ) -> Option<usize> {
+    ) -> Option<EntityId> {
         let mut changed = None;
         let order = scene
             .hierarchy_order()
@@ -45,15 +45,16 @@ impl EditorPlugin {
                     let entity = &scene.entities[index];
                     depths[index] = entity
                         .parent
+                        .and_then(|parent| scene.index_of(parent))
                         .and_then(|parent| depths.get(parent).copied())
                         .map_or(0, |depth| depth + 1);
                     ui.horizontal(|ui| {
                         ui.add_space(depths[index] as f32 * 14.0);
                         if ui
-                            .selectable_label(self.selected_entity == Some(index), &entity.name)
+                            .selectable_label(self.selected_entity == Some(entity.id), &entity.name)
                             .clicked()
                         {
-                            self.selected_entity = Some(index);
+                            self.selected_entity = Some(entity.id);
                         }
                     });
                 }
@@ -64,6 +65,7 @@ impl EditorPlugin {
                 ui.heading("Inspector");
                 if let Some((index, entity)) = self
                     .selected_entity
+                    .and_then(|id| scene.index_of(id))
                     .and_then(|index| scene.entities.get_mut(index).map(|entity| (index, entity)))
                 {
                     let mut edited = ui.text_edit_singleline(&mut entity.name).changed();
@@ -149,7 +151,7 @@ impl EditorPlugin {
                         }
                     }
                     if edited {
-                        changed = Some(index);
+                        changed = Some(entity.id);
                     }
                 }
                 ui.separator();

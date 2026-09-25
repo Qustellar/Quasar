@@ -7,10 +7,11 @@ use std::path::Path;
 
 mod gltf;
 mod scene;
-pub use gltf::{GltfImport, ImportedMesh, import_gltf};
+pub use gltf::{GltfImport, ImportedMesh, import_gltf, import_gltf_cached};
+pub use qst_core::EntityId;
 pub use scene::{
-    BoxCollider, Camera, DirectionalLight, MeshRenderer, SCENE_SCHEMA_VERSION, SceneAsset,
-    SceneEntity, SceneHandle, Transform,
+    BoxCollider, Camera, DirectionalLight, LEGACY_SCENE_SCHEMA_VERSION, MeshRenderer,
+    SCENE_SCHEMA_VERSION, SceneAsset, SceneEntity, SceneHandle, Transform,
 };
 #[cfg(test)]
 mod tests;

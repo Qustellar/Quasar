@@ -5,6 +5,8 @@ pub struct FixedTime {
     pub step_seconds: f32,
     pub accumulator_seconds: f32,
     pub max_steps_per_frame: u32,
+    #[serde(default)]
+    pub dropped_steps: u32,
 }
 
 impl Default for FixedTime {
@@ -13,12 +15,14 @@ impl Default for FixedTime {
             step_seconds: 1.0 / 60.0,
             accumulator_seconds: 0.0,
             max_steps_per_frame: 4,
+            dropped_steps: 0,
         }
     }
 }
 
 impl FixedTime {
     pub fn push(&mut self, delta: Duration) -> u32 {
+        self.dropped_steps = 0;
         self.accumulator_seconds += delta.as_secs_f32().min(0.25);
         let mut steps = 0;
         while self.accumulator_seconds >= self.step_seconds && steps < self.max_steps_per_frame {
@@ -26,6 +30,7 @@ impl FixedTime {
             steps += 1;
         }
         if steps == self.max_steps_per_frame && self.accumulator_seconds >= self.step_seconds {
+            self.dropped_steps = (self.accumulator_seconds / self.step_seconds).floor() as u32;
             self.accumulator_seconds = 0.0;
         }
         steps

@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bincode.workspace = true
+blake3.workspace = true
 bevy_ecs.workspace = true
 gltf.workspace = true
 qst-asset = { path = "../qst-asset" }
@@ -14,6 +16,7 @@ qst-core = { path = "../qst-core" }
 qst-ecs = { path = "../qst-ecs" }
 ron.workspace = true
 serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 base64 = "0.22"

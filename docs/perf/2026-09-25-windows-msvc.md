@@ -16,3 +16,7 @@
 The `<400 MB` resident working-set target was not met over the measured interval. This is a baseline, not evidence of a leak or a representative game workload. A memory breakdown and repeat runs are needed before choosing an optimization.
 
 Build each mode with `cargo build -p playground --release` or `cargo build -p playground --release --features editor` in the VS2022 x64 developer environment. Run the resulting `target/release/playground.exe` with the environment variables above. Rebuild between modes because both commands produce the same executable path.
+
+## 0.0.1 batch counters
+
+The 0.0.1 benchmark line additionally prints `batches_p50` and `draw_calls_p50`. The renderer's deterministic unit benchmark builds 1,024 instances across four mesh/material keys and verifies four batches; the runtime benchmark should be recorded with the same scene, backend, and window configuration before comparing frame or memory numbers.

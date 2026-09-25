@@ -1,6 +1,7 @@
 use super::*;
 
-pub const SCENE_SCHEMA_VERSION: u32 = 1;
+pub const LEGACY_SCENE_SCHEMA_VERSION: u32 = 1;
+pub const SCENE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Transform {
@@ -68,9 +69,11 @@ pub struct BoxCollider {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SceneEntity {
+    #[serde(default)]
+    pub id: EntityId,
     pub name: String,
     #[serde(default)]
-    pub parent: Option<usize>,
+    pub parent: Option<EntityId>,
     pub transform: TransformState,
     pub mesh: Option<MeshRenderer>,
     pub camera: Option<Camera>,
@@ -81,6 +84,7 @@ pub struct SceneEntity {
 impl Default for SceneEntity {
     fn default() -> Self {
         Self {
+            id: EntityId::default(),
             name: "Entity".into(),
             parent: None,
             transform: TransformState::identity(),
@@ -120,6 +124,29 @@ impl SceneAsset {
         }
     }
 
+    pub fn push_entity(&mut self, mut entity: SceneEntity) -> EntityId {
+        let id = self.allocate_entity_id();
+        entity.id = id;
+        self.entities.push(entity);
+        id
+    }
+
+    pub fn allocate_entity_id(&self) -> EntityId {
+        EntityId::new(
+            self.entities
+                .iter()
+                .map(|entity| entity.id.0)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1)
+                .max(1),
+        )
+    }
+
+    pub fn index_of(&self, id: EntityId) -> Option<usize> {
+        self.entities.iter().position(|entity| entity.id == id)
+    }
+
     pub fn instantiate(&self, world: &mut World) -> Vec<Entity> {
         self.entities
             .iter()
@@ -143,16 +170,24 @@ impl SceneAsset {
     }
 
     pub fn hierarchy_order(&self) -> EngineResult<Vec<usize>> {
+        self.validate_ids()?;
+        let indices = self
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (entity.id, index))
+            .collect::<std::collections::HashMap<_, _>>();
         let mut children = vec![Vec::new(); self.entities.len()];
         let mut roots = Vec::new();
         for (index, entity) in self.entities.iter().enumerate() {
             if let Some(parent) = entity.parent {
-                let Some(siblings) = children.get_mut(parent) else {
+                let Some(&parent_index) = indices.get(&parent) else {
                     return Err(EngineError::Unsupported(format!(
-                        "scene entity {index} has missing parent {parent}"
+                        "scene entity {} has missing parent {}",
+                        entity.id.0, parent.0
                     )));
                 };
-                siblings.push(index);
+                children[parent_index].push(index);
             } else {
                 roots.push(index);
             }
@@ -172,6 +207,25 @@ impl SceneAsset {
         Ok(order)
     }
 
+    pub fn validate_ids(&self) -> EngineResult<()> {
+        let mut ids = std::collections::HashSet::with_capacity(self.entities.len());
+        for entity in &self.entities {
+            if !entity.id.is_valid() {
+                return Err(EngineError::Unsupported(format!(
+                    "scene entity {} has invalid id 0",
+                    entity.name
+                )));
+            }
+            if !ids.insert(entity.id) {
+                return Err(EngineError::Unsupported(format!(
+                    "duplicate scene entity id {}",
+                    entity.id.0
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn save_ron(&self, path: impl AsRef<Path>) -> EngineResult<()> {
         if self.schema_version != SCENE_SCHEMA_VERSION {
             return Err(EngineError::Unsupported(format!(
@@ -188,9 +242,31 @@ impl SceneAsset {
 
     pub fn load_ron(path: impl AsRef<Path>) -> EngineResult<Self> {
         let text = fs::read_to_string(path)?;
-        let scene: Self =
+        let mut scene: Self =
             ron::from_str(&text).map_err(|error| EngineError::Serialization(error.to_string()))?;
-        if scene.schema_version != SCENE_SCHEMA_VERSION {
+        if scene.schema_version == LEGACY_SCENE_SCHEMA_VERSION {
+            let ids = (0..scene.entities.len())
+                .map(|index| EntityId::new(index as u64 + 1))
+                .collect::<Vec<_>>();
+            let legacy_parents = scene
+                .entities
+                .iter()
+                .map(|entity| entity.parent.map(|parent| parent.0 as usize))
+                .collect::<Vec<_>>();
+            for (index, entity) in scene.entities.iter_mut().enumerate() {
+                entity.id = ids[index];
+                entity.parent = match legacy_parents[index] {
+                    Some(parent) => Some(*ids.get(parent).ok_or_else(|| {
+                        EngineError::Unsupported(format!(
+                            "legacy scene entity {index} has missing parent {parent}"
+                        ))
+                    })?),
+                    None => None,
+                };
+            }
+            scene.schema_version = SCENE_SCHEMA_VERSION;
+            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 2");
+        } else if scene.schema_version != SCENE_SCHEMA_VERSION {
             return Err(EngineError::Unsupported(format!(
                 "scene schema {}",
                 scene.schema_version

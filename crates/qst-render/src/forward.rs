@@ -11,7 +11,7 @@ struct Globals {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct ObjectUniform {
+struct InstanceData {
     model: [[f32; 4]; 4],
     color: [f32; 4],
 }
@@ -22,23 +22,36 @@ struct GpuMesh {
     index_count: u32,
 }
 
-struct GpuObject {
+struct GpuBatch {
+    mesh: AssetId<MeshAsset>,
+    material: AssetId<MaterialAsset>,
     buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    capacity: usize,
+    count: u32,
 }
 
 pub struct ForwardFeature {
     pipeline: wgpu::RenderPipeline,
     globals_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
-    object_layout: wgpu::BindGroupLayout,
     meshes: HashMap<AssetId<MeshAsset>, GpuMesh>,
     materials: HashMap<AssetId<MaterialAsset>, MaterialAsset>,
-    objects: HashMap<u64, GpuObject>,
+    batches: Vec<GpuBatch>,
     instances: Vec<RenderInstance>,
     camera: Option<RenderCamera>,
     light: Option<RenderLight>,
     viewport: [u32; 2],
+    stats: RenderStats,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderStats {
+    pub instances: usize,
+    pub batches: usize,
+    pub draw_calls: usize,
+    pub instance_upload_bytes: u64,
+    pub skipped_instances: usize,
+    pub fallback: bool,
 }
 
 impl ForwardFeature {
@@ -48,7 +61,6 @@ impl ForwardFeature {
             source: wgpu::ShaderSource::Wgsl(include_str!("forward.wgsl").into()),
         });
         let globals_layout = uniform_layout(device, "globals-layout");
-        let object_layout = uniform_layout(device, "object-layout");
         let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("globals"),
             contents: bytemuck::bytes_of(&Globals::zeroed()),
@@ -62,7 +74,7 @@ impl ForwardFeature {
         );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("forward-layout"),
-            bind_group_layouts: &[&globals_layout, &object_layout],
+            bind_group_layouts: &[&globals_layout],
             push_constant_ranges: &[],
         });
         let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
@@ -73,11 +85,24 @@ impl ForwardFeature {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<MeshVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                }],
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<MeshVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<InstanceData>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32x4,
+                            5 => Float32x4,
+                            6 => Float32x4,
+                        ],
+                    },
+                ],
             },
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -105,14 +130,14 @@ impl ForwardFeature {
             pipeline,
             globals_buffer,
             globals_bind_group,
-            object_layout,
             meshes: HashMap::new(),
             materials: HashMap::new(),
-            objects: HashMap::new(),
+            batches: Vec::new(),
             instances: Vec::new(),
             camera: None,
             light: None,
             viewport,
+            stats: RenderStats::default(),
         }
     }
 
@@ -146,7 +171,7 @@ impl ForwardFeature {
     }
 
     pub(crate) fn gpu_resource_count(&self) -> usize {
-        self.meshes.len() + self.materials.len() + self.objects.len()
+        self.meshes.len() + self.materials.len() + self.batches.len()
     }
 
     pub(crate) fn set_viewport(&mut self, width: u32, height: u32) {
@@ -168,6 +193,10 @@ impl ForwardFeature {
     pub(crate) fn remove_material(&mut self, handle: Handle<MaterialAsset>) {
         self.materials.remove(&handle.id);
     }
+
+    pub(crate) fn stats(&self) -> RenderStats {
+        self.stats
+    }
 }
 
 impl RenderFeature for ForwardFeature {
@@ -178,6 +207,14 @@ impl RenderFeature for ForwardFeature {
     }
 
     fn prepare(&mut self, device: &Device, queue: &Queue) -> EngineResult<()> {
+        self.instances.sort_by_key(|instance| {
+            (
+                instance.mesh.id.index,
+                instance.mesh.id.generation,
+                instance.material.id.index,
+                instance.material.id.generation,
+            )
+        });
         let camera = self.camera.unwrap_or(RenderCamera {
             transform: TransformState {
                 translation: Vec3::new(0.0, 2.0, 8.0),
@@ -216,58 +253,114 @@ impl RenderFeature for ForwardFeature {
             ambient: [0.2, 0.22, 0.25, 0.0],
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        let visible: std::collections::HashSet<u64> = self
-            .instances
-            .iter()
-            .map(|instance| instance.entity)
-            .collect();
-        self.objects.retain(|entity, _| visible.contains(entity));
+        let mut groups: Vec<(
+            AssetId<MeshAsset>,
+            AssetId<MaterialAsset>,
+            Vec<InstanceData>,
+        )> = Vec::new();
         for instance in &self.instances {
-            let color = self
-                .materials
-                .get(&instance.material.id)
-                .map(|m| m.color)
-                .unwrap_or([0.8, 0.8, 0.8, 1.0]);
-            let uniform = ObjectUniform {
-                model: transform_matrix(instance.transform).to_cols_array_2d(),
-                color,
-            };
-            if let Some(object) = self.objects.get(&instance.entity) {
-                queue.write_buffer(&object.buffer, 0, bytemuck::bytes_of(&uniform));
-            } else {
-                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("object-uniform"),
-                    contents: bytemuck::bytes_of(&uniform),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            let key = (instance.mesh.id, instance.material.id);
+            if let Some((_, _, values)) = groups
+                .iter_mut()
+                .find(|(mesh, material, _)| (*mesh, *material) == key)
+            {
+                values.push(InstanceData {
+                    model: transform_matrix(instance.transform).to_cols_array_2d(),
+                    color: self
+                        .materials
+                        .get(&instance.material.id)
+                        .map(|m| m.color)
+                        .unwrap_or([0.8; 4]),
                 });
-                let bind_group =
-                    uniform_bind_group(device, &self.object_layout, &buffer, "object-bind-group");
-                self.objects
-                    .insert(instance.entity, GpuObject { buffer, bind_group });
+            } else {
+                groups.push((
+                    key.0,
+                    key.1,
+                    vec![InstanceData {
+                        model: transform_matrix(instance.transform).to_cols_array_2d(),
+                        color: self
+                            .materials
+                            .get(&instance.material.id)
+                            .map(|m| m.color)
+                            .unwrap_or([0.8; 4]),
+                    }],
+                ));
             }
         }
+        self.batches.truncate(groups.len());
+        for (index, (mesh, material, values)) in groups.iter().enumerate() {
+            let required = values.len();
+            let batch = if let Some(batch) = self.batches.get_mut(index) {
+                batch
+            } else {
+                self.batches.push(GpuBatch {
+                    mesh: *mesh,
+                    material: *material,
+                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("instance-buffer"),
+                        size: (std::mem::size_of::<InstanceData>() * required.max(1)) as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                    capacity: required.max(1),
+                    count: 0,
+                });
+                self.batches.last_mut().expect("batch inserted")
+            };
+            batch.mesh = *mesh;
+            batch.material = *material;
+            if batch.capacity < required {
+                batch.capacity = required.next_power_of_two();
+                batch.buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("instance-buffer"),
+                    size: (std::mem::size_of::<InstanceData>() * batch.capacity) as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(values));
+            batch.count = required as u32;
+        }
+        self.stats = RenderStats {
+            instances: self.instances.len(),
+            batches: groups.len(),
+            draw_calls: groups.len(),
+            instance_upload_bytes: groups
+                .iter()
+                .map(|(_, _, values)| (values.len() * std::mem::size_of::<InstanceData>()) as u64)
+                .sum(),
+            skipped_instances: self
+                .instances
+                .iter()
+                .filter(|instance| !self.meshes.contains_key(&instance.mesh.id))
+                .count(),
+            fallback: false,
+        };
         Ok(())
     }
 
     fn queue(&mut self, _snapshot: &RenderSnapshot) {
-        self.instances
-            .sort_by_key(|instance| (instance.mesh.id.index, instance.material.id.index));
+        self.instances.sort_by_key(|instance| {
+            (
+                instance.mesh.id.index,
+                instance.mesh.id.generation,
+                instance.material.id.index,
+                instance.material.id.generation,
+            )
+        });
     }
 
     fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.globals_bind_group, &[]);
-        for instance in &self.instances {
-            let (Some(mesh), Some(object)) = (
-                self.meshes.get(&instance.mesh.id),
-                self.objects.get(&instance.entity),
-            ) else {
+        for batch in &self.batches {
+            let Some(mesh) = self.meshes.get(&batch.mesh) else {
                 continue;
             };
-            pass.set_bind_group(1, &object.bind_group, &[]);
             pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+            pass.set_vertex_buffer(1, batch.buffer.slice(..));
             pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..batch.count);
         }
     }
 }

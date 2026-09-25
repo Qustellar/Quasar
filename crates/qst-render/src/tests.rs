@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn snapshot_groups_instances_by_mesh_and_material() {
+    let mut snapshot = RenderSnapshot::default();
+    for entity in 0..1024 {
+        snapshot.instances.push(RenderInstance {
+            entity,
+            transform: TransformState::identity(),
+            mesh: Handle::new(AssetId::new((entity % 4) as u32, 0)),
+            material: Handle::new(AssetId::new((entity % 4) as u32, 0)),
+        });
+    }
+    assert_eq!(snapshot.instances.len(), 1024);
+    assert_eq!(snapshot.batch_count(), 4);
+}
+
+#[test]
 #[ignore = "requires a GPU adapter"]
 fn forward_feature_draws_nonblank_pixels() {
     pollster::block_on(async {

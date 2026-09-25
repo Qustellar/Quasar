@@ -32,7 +32,7 @@ impl EngineApp {
                     let tx = self.reload_tx.clone();
                     self.reload_pending = true;
                     std::thread::spawn(move || {
-                        let result = import_gltf(&path);
+                        let result = import_gltf_cached(&path).map(|(imported, _)| imported);
                         let _ = tx.send(ReloadResult::Gltf(path, result));
                     });
                 } else if let Some(path) = self

@@ -11,7 +11,12 @@ impl EngineApp {
                 path.parent().unwrap_or(Path::new(".")).join(source)
             };
             let source = std::fs::canonicalize(source)?;
-            let imported = import_gltf(&source)?;
+            let (imported, cache_hit) = import_gltf_cached(&source)?;
+            if cache_hit {
+                self.diagnostics.asset_cache_hits += 1;
+            } else {
+                self.diagnostics.asset_cache_misses += 1;
+            }
             scene.source_gltf = Some(source);
             Some(imported)
         } else {
@@ -63,6 +68,13 @@ impl EngineApp {
         self.saved_scene_contents = None;
         self.scene = scene;
         self.hierarchy_order = hierarchy_order;
+        self.scene_index_by_id = self
+            .scene
+            .entities
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (entity.id, index))
+            .collect();
         self.authored_transforms = self
             .scene
             .entities
@@ -128,7 +140,12 @@ impl EngineApp {
 
     pub fn import_gltf(&mut self, path: impl AsRef<Path>) -> EngineResult<&mut Self> {
         let path = std::fs::canonicalize(path)?;
-        let mut imported = import_gltf(&path)?;
+        let (mut imported, cache_hit) = import_gltf_cached(&path)?;
+        if cache_hit {
+            self.diagnostics.asset_cache_hits += 1;
+        } else {
+            self.diagnostics.asset_cache_misses += 1;
+        }
         imported.scene.source_gltf = Some(path.clone());
         self.apply_gltf_import(imported)?;
         self.assets.watch_path(&path)?;
@@ -206,7 +223,10 @@ impl EngineApp {
 
     pub(crate) fn propagate_scene_hierarchy(&mut self, snap_interpolation: bool) {
         for &index in &self.hierarchy_order {
-            let Some(parent_index) = self.scene.entities[index].parent else {
+            let Some(parent_id) = self.scene.entities[index].parent else {
+                continue;
+            };
+            let Some(&parent_index) = self.scene_index_by_id.get(&parent_id) else {
                 continue;
             };
             let Some(parent) = self
@@ -275,7 +295,10 @@ impl EngineApp {
         let mut affected = vec![false; self.scene.entities.len()];
         affected[index] = true;
         for &child_index in &self.hierarchy_order {
-            let Some(parent_index) = self.scene.entities[child_index].parent else {
+            let Some(parent_id) = self.scene.entities[child_index].parent else {
+                continue;
+            };
+            let Some(&parent_index) = self.scene_index_by_id.get(&parent_id) else {
                 continue;
             };
             if !affected[parent_index] {

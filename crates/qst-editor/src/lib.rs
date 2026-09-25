@@ -1,4 +1,4 @@
-use qst_core::{FrameDiagnostics, glam};
+use qst_core::{EntityId, FrameDiagnostics, glam};
 use qst_scene::SceneAsset;
 use winit::{event::WindowEvent, window::Window};
 

@@ -15,7 +15,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.0.1"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/Qustellar/Quasar"
@@ -28,9 +28,11 @@ egui-wgpu = "0.33"
 egui-winit = "0.33"
 gltf = "1.4"
 glam = { version = "0.30", features = ["serde"] }
+blake3 = "1"
 notify = "8"
 rapier3d = "0.35"
 ron = "0.10"
+bincode = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tracing = "0.1"

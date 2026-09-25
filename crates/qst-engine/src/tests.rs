@@ -4,6 +4,7 @@ fn hierarchy_scene() -> SceneAsset {
     let mut scene = SceneAsset::new("nested boxes");
     scene.entities = vec![
         SceneEntity {
+            id: EntityId::new(1),
             name: "Parent".into(),
             transform: TransformState {
                 translation: glam::Vec3::new(1.0, 0.0, 0.0),
@@ -12,8 +13,9 @@ fn hierarchy_scene() -> SceneAsset {
             ..SceneEntity::default()
         },
         SceneEntity {
+            id: EntityId::new(2),
             name: "Body".into(),
-            parent: Some(0),
+            parent: Some(EntityId::new(1)),
             transform: TransformState {
                 translation: glam::Vec3::new(3.0, 3.0, 0.0),
                 ..TransformState::identity()
@@ -25,8 +27,9 @@ fn hierarchy_scene() -> SceneAsset {
             ..SceneEntity::default()
         },
         SceneEntity {
+            id: EntityId::new(3),
             name: "Child".into(),
-            parent: Some(1),
+            parent: Some(EntityId::new(2)),
             transform: TransformState {
                 translation: glam::Vec3::new(4.0, 3.0, 0.0),
                 ..TransformState::identity()
@@ -85,10 +88,14 @@ fn fixed_parent_rotation_moves_descendants_and_rotates_physics_body() {
 fn editor_parent_rotation_updates_camera_and_light_snapshot() {
     let mut scene = SceneAsset::new("camera rig");
     scene.entities = vec![
-        SceneEntity::default(),
         SceneEntity {
+            id: EntityId::new(1),
+            ..SceneEntity::default()
+        },
+        SceneEntity {
+            id: EntityId::new(2),
             name: "Camera".into(),
-            parent: Some(0),
+            parent: Some(EntityId::new(1)),
             transform: TransformState {
                 translation: glam::Vec3::new(0.0, 0.0, 3.0),
                 ..TransformState::identity()
@@ -101,8 +108,9 @@ fn editor_parent_rotation_updates_camera_and_light_snapshot() {
             ..SceneEntity::default()
         },
         SceneEntity {
+            id: EntityId::new(3),
             name: "Light".into(),
-            parent: Some(0),
+            parent: Some(EntityId::new(1)),
             light: Some(DirectionalLight {
                 direction: [0.0, 0.0, -1.0],
                 ..DirectionalLight::default()
@@ -114,7 +122,7 @@ fn editor_parent_rotation_updates_camera_and_light_snapshot() {
     app.set_scene(scene).unwrap();
     app.scene.entities[0].transform.rotation =
         glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-    app.apply_editor_change(0);
+    app.apply_editor_change(EntityId::new(1));
     let snapshot = app.render_snapshot();
     let camera = snapshot.camera.unwrap();
     assert!((camera.transform.translation.x - 3.0).abs() < 1e-4);
@@ -129,7 +137,7 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
     let mut app = EngineApp::new();
     app.set_scene(hierarchy_scene()).unwrap();
     app.scene.entities[0].transform.translation.x += 2.0;
-    app.apply_editor_change(0);
+    app.apply_editor_change(EntityId::new(1));
     assert_eq!(app.scene.entities[1].transform.translation.x, 5.0);
     assert_eq!(app.scene.entities[2].transform.translation.x, 6.0);
     assert_eq!(
@@ -142,7 +150,7 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
         5.0
     );
     app.scene.entities[0].transform.scale = glam::Vec3::splat(2.0);
-    app.apply_editor_change(0);
+    app.apply_editor_change(EntityId::new(1));
     assert_eq!(
         app.scene.entities[1].transform.scale,
         glam::Vec3::splat(2.0)
@@ -174,7 +182,7 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
         .as_mut()
         .unwrap()
         .half_extents[0] = 0.75;
-    app.apply_editor_change(1);
+    app.apply_editor_change(EntityId::new(2));
     let after_edit_y = app
         .world
         .get::<Transform>(app.scene_entities[1])

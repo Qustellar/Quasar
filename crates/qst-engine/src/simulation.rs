@@ -19,6 +19,7 @@ impl EngineApp {
                 material: material_handle,
             });
         }
+        self.diagnostics.render_instances = snapshot.instances.len();
         let mut cameras = self.world.query::<(&Transform, &Camera)>();
         if let Some((transform, camera)) = cameras.iter(&self.world).next() {
             snapshot.camera = Some(RenderCamera {
@@ -44,6 +45,8 @@ impl EngineApp {
     pub fn update_fixed(&mut self, delta: std::time::Duration) {
         let _span = tracing::info_span!("fixed_update").entered();
         let steps = self.fixed_time.push(delta);
+        self.diagnostics.fixed_steps = steps;
+        self.diagnostics.dropped_fixed_steps += self.fixed_time.dropped_steps as u64;
         let start = Instant::now();
         for _ in 0..steps {
             let mut transforms = self.world.query::<&mut Transform>();
@@ -65,7 +68,10 @@ impl EngineApp {
     }
 
     #[cfg(feature = "editor")]
-    pub(crate) fn apply_editor_change(&mut self, index: usize) {
+    pub(crate) fn apply_editor_change(&mut self, entity_id: EntityId) {
+        let Some(&index) = self.scene_index_by_id.get(&entity_id) else {
+            return;
+        };
         let (Some(&entity), Some(source)) = (
             self.scene_entities.get(index),
             self.scene.entities.get(index),

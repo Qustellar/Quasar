@@ -6,17 +6,27 @@ use std::time::Instant;
 
 pub use qst_asset::{AssetServer, AssetStorage, LoadState};
 pub use qst_core::{
-    EngineError, EngineResult, FixedTime, FrameDiagnostics, Handle, TransformState, glam,
+    EngineError, EngineResult, EntityId, FixedTime, FrameDiagnostics, Handle, TransformState, glam,
 };
 pub use qst_ecs::{
     Component, Entity, FixedUpdate, IntoScheduleConfigs, Resource, Schedule, SimulationStep, World,
 };
 pub use qst_render::{
     MaterialAsset, MeshAsset, MeshVertex, RenderFeature, RenderGraph, RenderNode, RenderSnapshot,
+    RenderStats,
 };
 pub use qst_scene::{
     BoxCollider, Camera, DirectionalLight, MeshRenderer, SceneAsset, SceneEntity, Transform,
 };
+
+pub mod prelude {
+    pub use crate::{
+        BoxCollider, Camera, DirectionalLight, EngineApp, EngineError, EngineResult, EntityId,
+        FixedTime, FrameDiagnostics, Handle, MaterialAsset, MeshAsset, MeshRenderer, Plugin,
+        RenderFeature, RenderGraph, RenderNode, RenderSnapshot, RenderStats, SceneAsset,
+        SceneEntity, Transform,
+    };
+}
 
 use qst_ecs::make_fixed_schedule;
 #[cfg(feature = "editor")]
@@ -24,7 +34,7 @@ use qst_editor::{EditorRuntime, PlayState};
 pub use qst_physics::PhysicsCollision;
 use qst_physics::{PhysicsConfig, PhysicsWorld};
 use qst_render::{RenderCamera, RenderInstance, RenderLight, Renderer};
-use qst_scene::import_gltf;
+use qst_scene::import_gltf_cached;
 use qst_scene::{GltfImport, ImportedMesh};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -93,6 +103,7 @@ pub struct EngineApp {
     material_names: HashMap<String, Handle<MaterialAsset>>,
     scene_entities: Vec<Entity>,
     hierarchy_order: Vec<usize>,
+    scene_index_by_id: HashMap<EntityId, usize>,
     last_scene_transforms: Vec<TransformState>,
     authored_transforms: Vec<TransformState>,
     gltf_mesh_names: Vec<String>,
@@ -143,6 +154,7 @@ impl EngineApp {
             material_names: HashMap::new(),
             scene_entities: Vec::new(),
             hierarchy_order: Vec::new(),
+            scene_index_by_id: HashMap::new(),
             last_scene_transforms: Vec::new(),
             authored_transforms: Vec::new(),
             gltf_mesh_names: Vec::new(),

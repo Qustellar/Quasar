@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn scene_round_trip() {
     let mut scene = SceneAsset::new("test");
-    scene.entities.push(SceneEntity::default());
+    scene.push_entity(SceneEntity::default());
     let text = ron::to_string(&scene).unwrap();
     let decoded: SceneAsset = ron::from_str(&text).unwrap();
     assert_eq!(decoded.schema_version, SCENE_SCHEMA_VERSION);
@@ -11,17 +11,36 @@ fn scene_round_trip() {
 }
 
 #[test]
+fn legacy_scene_is_migrated_to_stable_ids() {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/playground.ron");
+    let scene = SceneAsset::load_ron(path).unwrap();
+    assert_eq!(scene.schema_version, SCENE_SCHEMA_VERSION);
+    assert_eq!(scene.entities[0].id, EntityId::new(1));
+    assert_eq!(scene.entities[1].parent, Some(EntityId::new(1)));
+    assert!(scene.validate_ids().is_ok());
+}
+
+#[test]
 fn hierarchy_orders_descendants_even_when_children_precede_parents() {
     let mut scene = SceneAsset::new("nested");
     scene.entities = vec![
         SceneEntity {
-            parent: Some(2),
+            id: EntityId::new(1),
+            parent: Some(EntityId::new(3)),
             ..SceneEntity::default()
         },
-        SceneEntity::default(),
-        SceneEntity::default(),
         SceneEntity {
-            parent: Some(0),
+            id: EntityId::new(2),
+            ..SceneEntity::default()
+        },
+        SceneEntity {
+            id: EntityId::new(3),
+            ..SceneEntity::default()
+        },
+        SceneEntity {
+            id: EntityId::new(4),
+            parent: Some(EntityId::new(1)),
             ..SceneEntity::default()
         },
     ];
@@ -32,12 +51,14 @@ fn hierarchy_orders_descendants_even_when_children_precede_parents() {
 fn hierarchy_rejects_missing_parents_and_cycles() {
     let mut scene = SceneAsset::new("invalid");
     scene.entities.push(SceneEntity {
-        parent: Some(1),
+        id: EntityId::new(1),
+        parent: Some(EntityId::new(2)),
         ..SceneEntity::default()
     });
     assert!(scene.hierarchy_order().is_err());
     scene.entities.push(SceneEntity {
-        parent: Some(0),
+        id: EntityId::new(2),
+        parent: Some(EntityId::new(1)),
         ..SceneEntity::default()
     });
     assert!(scene.hierarchy_order().is_err());
@@ -102,6 +123,11 @@ fn gltf_import_reads_static_primitive() {
     assert_eq!(imported.meshes.len(), 1);
     assert_eq!(imported.meshes[0].indices, [0, 1, 2]);
     assert_eq!(imported.scene.entities.len(), 2);
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(".quasar"));
+    let (_, first_hit) = import_gltf_cached(&path).unwrap();
+    let (_, second_hit) = import_gltf_cached(&path).unwrap();
+    assert!(!first_hit);
+    assert!(second_hit);
     document["meshes"][0]["primitives"][0]["mode"] = serde_json::json!(1);
     std::fs::write(&path, document.to_string()).unwrap();
     assert!(matches!(
@@ -109,4 +135,5 @@ fn gltf_import_reads_static_primitive() {
         Err(EngineError::Unsupported(_))
     ));
     std::fs::remove_file(path).unwrap();
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(".quasar"));
 }

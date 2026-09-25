@@ -86,6 +86,10 @@ impl Renderer {
         self.forward.gpu_resource_count()
     }
 
+    pub fn render_stats(&self) -> RenderStats {
+        self.forward.stats()
+    }
+
     pub fn remove_mesh(&mut self, handle: Handle<MeshAsset>) {
         self.forward.remove_mesh(handle);
     }

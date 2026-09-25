@@ -29,7 +29,7 @@ mod handle;
 mod time;
 mod transform;
 pub use diagnostics::FrameDiagnostics;
-pub use handle::{AssetId, Handle};
+pub use handle::{AssetId, EntityId, Handle};
 pub use time::FixedTime;
 pub use transform::TransformState;
 #[cfg(test)]

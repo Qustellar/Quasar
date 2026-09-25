@@ -1,6 +1,7 @@
 use super::*;
+use qst_core::EntityId;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportedMesh {
     pub name: String,
     pub positions: Vec<[f32; 3]>,
@@ -9,7 +10,7 @@ pub struct ImportedMesh {
     pub color: [f32; 4],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GltfImport {
     pub scene: SceneAsset,
     pub meshes: Vec<ImportedMesh>,
@@ -38,6 +39,86 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
     Ok(result)
 }
 
+const IMPORTER_VERSION: u32 = 1;
+const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF1";
+
+#[derive(Serialize, Deserialize)]
+struct CacheEnvelope {
+    magic: [u8; 8],
+    importer_version: u32,
+    source_path: String,
+    source_hash: [u8; 32],
+    dependency_hashes: Vec<[u8; 32]>,
+    import: GltfImport,
+}
+
+pub fn import_gltf_cached(path: impl AsRef<Path>) -> EngineResult<(GltfImport, bool)> {
+    let path = path.as_ref();
+    let source = std::fs::read(path)?;
+    let source_hash = *blake3::hash(&source).as_bytes();
+    let dependency_hashes = gltf_dependency_hashes(path);
+    let cache_dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".quasar")
+        .join("cache");
+    let key = blake3::hash(path.to_string_lossy().as_bytes())
+        .to_hex()
+        .to_string();
+    let cache_path = cache_dir.join(format!("{key}.gltf.bin"));
+    if let Ok(bytes) = std::fs::read(&cache_path)
+        && let Ok((envelope, _)) = bincode::serde::decode_from_slice::<CacheEnvelope, _>(
+            &bytes,
+            bincode::config::standard(),
+        )
+        && envelope.magic == *CACHE_MAGIC
+        && envelope.importer_version == IMPORTER_VERSION
+        && envelope.source_hash == source_hash
+        && envelope.dependency_hashes == dependency_hashes
+        && envelope.source_path == path.to_string_lossy()
+    {
+        return Ok((envelope.import, true));
+    }
+
+    let imported = import_gltf(path)?;
+    let envelope = CacheEnvelope {
+        magic: *CACHE_MAGIC,
+        importer_version: IMPORTER_VERSION,
+        source_path: path.to_string_lossy().into_owned(),
+        source_hash,
+        dependency_hashes,
+        import: imported.clone(),
+    };
+    if std::fs::create_dir_all(&cache_dir).is_ok()
+        && let Ok(encoded) = bincode::serde::encode_to_vec(&envelope, bincode::config::standard())
+    {
+        let temporary = cache_path.with_extension("tmp");
+        if std::fs::write(&temporary, encoded).is_ok() {
+            let _ = std::fs::rename(&temporary, &cache_path);
+        }
+    }
+    Ok((imported, false))
+}
+
+fn gltf_dependency_hashes(path: &Path) -> Vec<[u8; 32]> {
+    let Ok(document) = ::gltf::Gltf::open(path) else {
+        return Vec::new();
+    };
+    document
+        .document
+        .buffers()
+        .filter_map(|buffer| match buffer.source() {
+            ::gltf::buffer::Source::Uri(uri) if !uri.starts_with("data:") => {
+                let dependency = path.parent().unwrap_or_else(|| Path::new(".")).join(uri);
+                std::fs::read(dependency)
+                    .ok()
+                    .map(|bytes| *blake3::hash(&bytes).as_bytes())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn append_node(
     result: &mut GltfImport,
     buffers: &[::gltf::buffer::Data],
@@ -49,8 +130,9 @@ fn append_node(
     let world = parent_transform * local;
     let (scale, rotation, translation) = world.to_scale_rotation_translation();
     let mut entity = SceneEntity {
+        id: EntityId::new(result.scene.entities.len() as u64 + 1),
         name: node.name().unwrap_or("Node").into(),
-        parent: parent_index,
+        parent: parent_index.map(|index| EntityId::new(index as u64 + 1)),
         transform: TransformState {
             translation,
             rotation,
@@ -107,12 +189,13 @@ fn append_node(
                 color,
             });
             result.scene.entities.push(SceneEntity {
+                id: EntityId::new(result.scene.entities.len() as u64 + 1),
                 name: format!(
                     "{} primitive {}",
                     mesh.name().unwrap_or("Mesh"),
                     primitive_index
                 ),
-                parent: Some(node_index),
+                parent: Some(EntityId::new(node_index as u64 + 1)),
                 transform: TransformState {
                     translation,
                     rotation,

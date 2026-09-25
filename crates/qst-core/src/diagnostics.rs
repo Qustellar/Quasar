@@ -12,5 +12,23 @@ pub struct FrameDiagnostics {
     pub private_commit_bytes: Option<u64>,
     pub loaded_asset_count: usize,
     pub gpu_resource_count: usize,
+    #[serde(default)]
+    pub fixed_steps: u32,
+    #[serde(default)]
+    pub dropped_fixed_steps: u64,
+    #[serde(default)]
+    pub render_instances: usize,
+    #[serde(default)]
+    pub render_batches: usize,
+    #[serde(default)]
+    pub render_draw_calls: usize,
+    #[serde(default)]
+    pub instance_upload_bytes: u64,
+    #[serde(default)]
+    pub asset_cache_hits: u64,
+    #[serde(default)]
+    pub asset_cache_misses: u64,
+    #[serde(default)]
+    pub render_fallback: bool,
     pub last_reload: Option<String>,
 }

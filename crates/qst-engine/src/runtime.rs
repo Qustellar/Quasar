@@ -135,14 +135,14 @@ impl ApplicationHandler for EngineApp {
                     .collect();
                 #[cfg(feature = "editor")]
                 if let (Some(editor), Some(window)) = (&mut self.editor, &self.window)
-                    && let Some(index) = editor.prepare(
+                    && let Some(entity_id) = editor.prepare(
                         window,
                         &mut self.scene,
                         &runtime_positions,
                         &self.diagnostics,
                     )
                 {
-                    self.apply_editor_change(index);
+                    self.apply_editor_change(entity_id);
                 }
                 #[cfg(feature = "editor")]
                 if self
@@ -185,6 +185,12 @@ impl ApplicationHandler for EngineApp {
                         }
                     }
                     self.diagnostics.gpu_resource_count = renderer.gpu_resource_count();
+                    let stats = renderer.render_stats();
+                    self.diagnostics.render_instances = stats.instances;
+                    self.diagnostics.render_batches = stats.batches;
+                    self.diagnostics.render_draw_calls = stats.draw_calls;
+                    self.diagnostics.instance_upload_bytes = stats.instance_upload_bytes;
+                    self.diagnostics.render_fallback = stats.fallback;
                 }
                 self.diagnostics.loaded_asset_count = self.assets.records().count();
                 self.diagnostics.render_seconds = start.elapsed().as_secs_f32();

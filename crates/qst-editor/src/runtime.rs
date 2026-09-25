@@ -49,7 +49,7 @@ impl EditorRuntime {
         scene: &mut SceneAsset,
         runtime_positions: &[Option<[f32; 3]>],
         diagnostics: &FrameDiagnostics,
-    ) -> Option<usize> {
+    ) -> Option<EntityId> {
         let raw_input = self.input.take_egui_input(window);
         let mut changed = None;
         let output = self.context.run(raw_input, |context| {

@@ -7,6 +7,8 @@ pub(crate) struct BenchmarkCapture {
     pub(crate) frame_ms: Vec<f32>,
     pub(crate) fixed_ms: Vec<f32>,
     pub(crate) render_ms: Vec<f32>,
+    pub(crate) render_batches: Vec<usize>,
+    pub(crate) render_draw_calls: Vec<usize>,
     pub(crate) working_sets: Vec<u64>,
     pub(crate) private_working_sets: Vec<u64>,
     pub(crate) private_commits: Vec<u64>,
@@ -21,6 +23,8 @@ impl BenchmarkCapture {
             frame_ms: Vec::new(),
             fixed_ms: Vec::new(),
             render_ms: Vec::new(),
+            render_batches: Vec::new(),
+            render_draw_calls: Vec::new(),
             working_sets: Vec::new(),
             private_working_sets: Vec::new(),
             private_commits: Vec::new(),
@@ -45,6 +49,8 @@ impl BenchmarkCapture {
         self.fixed_ms
             .push(diagnostics.fixed_update_seconds * 1000.0);
         self.render_ms.push(diagnostics.render_seconds * 1000.0);
+        self.render_batches.push(diagnostics.render_batches);
+        self.render_draw_calls.push(diagnostics.render_draw_calls);
         if let Some(bytes) = diagnostics.resident_working_set_bytes {
             self.working_sets.push(bytes);
         }
@@ -66,13 +72,15 @@ impl BenchmarkCapture {
         let private_commit_min = self.private_commits.iter().min().copied();
         let private_commit_peak = self.private_commits.iter().max().copied();
         println!(
-            "benchmark width={width} height={height} resolution_stable={} frames={} frame_p50_ms={:.3} frame_p95_ms={:.3} fixed_p95_ms={:.3} render_p95_ms={:.3}",
+            "benchmark width={width} height={height} resolution_stable={} frames={} frame_p50_ms={:.3} frame_p95_ms={:.3} fixed_p95_ms={:.3} render_p95_ms={:.3} batches_p50={} draw_calls_p50={}",
             self.resolution_stable,
             self.frame_ms.len(),
             percentile(&self.frame_ms, 0.50),
             percentile(&self.frame_ms, 0.95),
             percentile(&self.fixed_ms, 0.95),
             percentile(&self.render_ms, 0.95),
+            percentile_usize(&self.render_batches, 0.50),
+            percentile_usize(&self.render_draw_calls, 0.50),
         );
         println!(
             "benchmark_memory working_set_min_bytes={working_set_min:?} working_set_peak_bytes={working_set_peak:?} private_working_set_min_bytes={private_working_set_min:?} private_working_set_peak_bytes={private_working_set_peak:?} private_commit_min_bytes={private_commit_min:?} private_commit_peak_bytes={private_commit_peak:?}"
@@ -83,6 +91,15 @@ impl BenchmarkCapture {
 pub(crate) fn percentile(samples: &[f32], fraction: f32) -> f32 {
     let mut sorted = samples.to_vec();
     sorted.sort_by(f32::total_cmp);
+    let index = ((sorted.len() as f32 * fraction).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len() - 1);
+    sorted[index]
+}
+
+fn percentile_usize(samples: &[usize], fraction: f32) -> usize {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
     let index = ((sorted.len() as f32 * fraction).ceil() as usize)
         .saturating_sub(1)
         .min(sorted.len() - 1);

@@ -65,3 +65,20 @@ impl<T> Handle<T> {
         Self { id }
     }
 }
+
+/// Stable identity for a serialized scene entity.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct EntityId(pub u64);
+
+impl EntityId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn is_valid(self) -> bool {
+        self.0 != 0
+    }
+}

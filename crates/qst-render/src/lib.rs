@@ -57,6 +57,23 @@ pub struct RenderSnapshot {
     pub lights: Vec<RenderLight>,
 }
 
+impl RenderSnapshot {
+    pub fn batch_count(&self) -> usize {
+        self.instances
+            .iter()
+            .map(|instance| {
+                (
+                    instance.mesh.id.index,
+                    instance.mesh.id.generation,
+                    instance.material.id.index,
+                    instance.material.id.generation,
+                )
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+}
+
 pub trait RenderFeature: Send {
     fn extract(&mut self, _snapshot: &RenderSnapshot) {}
     fn prepare(&mut self, _device: &Device, _queue: &Queue) -> EngineResult<()> {
@@ -88,6 +105,7 @@ mod forward;
 mod renderer;
 
 use forward::ForwardFeature;
+pub use forward::RenderStats;
 pub use renderer::Renderer;
 #[cfg(test)]
 use renderer::depth_view;
