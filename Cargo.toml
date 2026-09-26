@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/qst-core",
     "crates/qst-ecs",
+    "crates/qst-input",
     "crates/qst-asset",
     "crates/qst-scene",
     "crates/qst-physics",
@@ -15,7 +16,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.0.1"
+version = "0.0.2"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/Qustellar/Quasar"
@@ -39,3 +40,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 wgpu = "27"
 winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rodio = { version = "0.21", default-features = false, features = ["wav", "mp3", "vorbis"] }

@@ -31,4 +31,32 @@ pub struct FrameDiagnostics {
     #[serde(default)]
     pub render_fallback: bool,
     pub last_reload: Option<String>,
+    #[serde(default)]
+    pub input_update_seconds: f32,
+    #[serde(default)]
+    pub scene_load_seconds: f32,
+    #[serde(default)]
+    pub asset_import_seconds: f32,
+    #[serde(default)]
+    pub cache_load_seconds: f32,
+    #[serde(default)]
+    pub gpu_upload_seconds: f32,
+    #[serde(default)]
+    pub physics_seconds: f32,
+    #[serde(default)]
+    pub transform_update_seconds: f32,
+    #[serde(default)]
+    pub animation_update_seconds: f32,
+    #[serde(default)]
+    pub render_prepare_seconds: f32,
+    #[serde(default)]
+    pub render_submit_seconds: f32,
+    #[serde(default)]
+    pub editor_seconds: f32,
+    #[serde(default)]
+    pub skipped_instances: usize,
+    #[serde(default)]
+    pub asset_dependency_count: u64,
+    #[serde(default)]
+    pub asset_rebuild_count: u64,
 }

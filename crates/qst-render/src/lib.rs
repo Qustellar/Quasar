@@ -22,9 +22,86 @@ pub struct MeshAsset {
     pub indices: Vec<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureAsset {
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
+impl TextureAsset {
+    pub fn from_bytes(bytes: &[u8]) -> EngineResult<Self> {
+        let image = image::load_from_memory(bytes)
+            .map_err(|error| EngineError::Runtime(error.to_string()))?
+            .to_rgba8();
+        Ok(Self {
+            width: image.width(),
+            height: image.height(),
+            rgba8: image.into_raw(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerAsset {
+    pub mag_filter: u32,
+    pub min_filter: u32,
+    pub repeat_u: bool,
+    pub repeat_v: bool,
+}
+
+impl Default for SamplerAsset {
+    fn default() -> Self {
+        Self {
+            mag_filter: 9729,
+            min_filter: 9987,
+            repeat_u: true,
+            repeat_v: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialAsset {
     pub color: [f32; 4],
+}
+
+impl MaterialAsset {
+    pub const fn from_color(color: [f32; 4]) -> Self {
+        Self { color }
+    }
+    pub const fn base_color(&self) -> [f32; 4] {
+        self.color
+    }
+    pub const fn metallic(&self) -> f32 {
+        0.0
+    }
+    pub const fn roughness(&self) -> f32 {
+        0.5
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PbrMaterial {
+    pub base_color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    pub base_color_texture: Option<Handle<TextureAsset>>,
+    pub metallic_roughness_texture: Option<Handle<TextureAsset>>,
+    pub normal_texture: Option<Handle<TextureAsset>>,
+}
+
+impl Default for PbrMaterial {
+    fn default() -> Self {
+        Self {
+            base_color: [1.0; 4],
+            metallic: 0.0,
+            roughness: 0.5,
+            base_color_texture: None,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

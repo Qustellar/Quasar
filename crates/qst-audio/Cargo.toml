@@ -8,3 +8,8 @@ repository.workspace = true
 
 [dependencies]
 qst-core = { path = "../qst-core" }
+rodio = { workspace = true, optional = true }
+
+[features]
+default = ["rodio-backend"]
+rodio-backend = ["dep:rodio"]

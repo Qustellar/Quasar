@@ -5,30 +5,53 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 pub use qst_asset::{AssetServer, AssetStorage, LoadState};
+#[cfg(feature = "audio")]
+pub use qst_audio::RodioAudioBackend;
+pub use qst_audio::{
+    AudioBackend, AudioClip, AudioFormat, AudioPlaybackState, AudioPlayer,
+    AudioSource as AudioRuntimeSource, NullAudioBackend,
+};
 pub use qst_core::{
     EngineError, EngineResult, EntityId, FixedTime, FrameDiagnostics, Handle, TransformState, glam,
 };
 pub use qst_ecs::{
-    Component, Entity, FixedUpdate, IntoScheduleConfigs, Resource, Schedule, SimulationStep, World,
+    Component, Entity, FixedUpdate, IntoScheduleConfigs, Physics, PostUpdate, PreUpdate, Render,
+    RenderExtract, Resource, Schedule, SimulationStep, Startup, VariableUpdate, World,
 };
+pub use qst_input::{ButtonState, GamepadInput, InputState, KeyboardState, MouseState};
 pub use qst_render::{
-    MaterialAsset, MeshAsset, MeshVertex, RenderFeature, RenderGraph, RenderNode, RenderSnapshot,
-    RenderStats,
+    MaterialAsset, MeshAsset, MeshVertex, PbrMaterial, RenderFeature, RenderGraph, RenderNode,
+    RenderSnapshot, RenderStats, SamplerAsset, TextureAsset,
 };
 pub use qst_scene::{
-    BoxCollider, Camera, DirectionalLight, MeshRenderer, SceneAsset, SceneEntity, Transform,
+    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
+    AnimationSampler, AudioSource, BoxCollider, Camera, DirectionalLight, LocalTransform,
+    MeshRenderer, Parent, PreviousWorldTransform, SceneAsset, SceneEntity, Transform,
+    WorldTransform,
 };
 
 pub mod prelude {
     pub use crate::{
-        BoxCollider, Camera, DirectionalLight, EngineApp, EngineError, EngineResult, EntityId,
-        FixedTime, FrameDiagnostics, Handle, MaterialAsset, MeshAsset, MeshRenderer, Plugin,
-        RenderFeature, RenderGraph, RenderNode, RenderSnapshot, RenderStats, SceneAsset,
-        SceneEntity, Transform,
+        AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer,
+        AnimationProperty, AnimationSampler, AudioBackend, AudioClip, AudioFormat,
+        AudioPlaybackState, AudioPlayer, BoxCollider, ButtonState, Camera, DirectionalLight,
+        EngineApp, EngineError, EngineResult, EntityId, FixedTime, FrameDiagnostics, GamepadInput,
+        Handle, InputState, KeyboardState, LocalTransform, MaterialAsset, MeshAsset, MeshRenderer,
+        MouseState, NullAudioBackend, Parent, PbrMaterial, Plugin, PreviousWorldTransform,
+        RenderFeature, RenderGraph, RenderNode, RenderSnapshot, RenderStats, SamplerAsset,
+        SceneAsset, SceneEntity, TextureAsset, Transform, WorldTransform,
     };
+    #[cfg(feature = "editor")]
+    pub use crate::{EditorPlugin, GizmoMode};
 }
 
-use qst_ecs::make_fixed_schedule;
+use qst_ecs::{
+    make_fixed_schedule, make_physics_schedule, make_post_update_schedule,
+    make_pre_update_schedule, make_render_extract_schedule, make_render_schedule,
+    make_startup_schedule, make_variable_schedule,
+};
+#[cfg(feature = "editor")]
+pub use qst_editor::{EditorPlugin, GizmoMode};
 #[cfg(feature = "editor")]
 use qst_editor::{EditorRuntime, PlayState};
 pub use qst_physics::PhysicsCollision;
@@ -93,14 +116,24 @@ use metrics::{BenchmarkCapture, current_process_memory};
 pub struct EngineApp {
     pub world: World,
     pub fixed_schedule: Schedule,
+    pub startup_schedule: Schedule,
+    pub pre_update_schedule: Schedule,
+    pub variable_schedule: Schedule,
+    pub physics_schedule: Schedule,
+    pub post_update_schedule: Schedule,
+    pub render_extract_schedule: Schedule,
+    pub render_schedule: Schedule,
     pub fixed_time: FixedTime,
     pub assets: AssetServer,
     pub scene: SceneAsset,
     pub diagnostics: FrameDiagnostics,
     mesh_assets: AssetStorage<MeshAsset>,
     material_assets: AssetStorage<MaterialAsset>,
+    texture_assets: AssetStorage<TextureAsset>,
     mesh_names: HashMap<String, Handle<MeshAsset>>,
     material_names: HashMap<String, Handle<MaterialAsset>>,
+    texture_names: HashMap<String, Handle<TextureAsset>>,
+    animation_clips: HashMap<String, AnimationClip>,
     scene_entities: Vec<Entity>,
     hierarchy_order: Vec<usize>,
     scene_index_by_id: HashMap<EntityId, usize>,
@@ -141,17 +174,28 @@ impl EngineApp {
             index: 0,
             delta_seconds: fixed_time.step_seconds,
         });
+        world.insert_resource(InputState::default());
         Self {
             world,
             fixed_schedule: make_fixed_schedule(),
+            startup_schedule: make_startup_schedule(),
+            pre_update_schedule: make_pre_update_schedule(),
+            variable_schedule: make_variable_schedule(),
+            physics_schedule: make_physics_schedule(),
+            post_update_schedule: make_post_update_schedule(),
+            render_extract_schedule: make_render_extract_schedule(),
+            render_schedule: make_render_schedule(),
             fixed_time,
             assets: AssetServer::new(),
             scene: SceneAsset::default(),
             diagnostics: FrameDiagnostics::default(),
             mesh_assets: AssetStorage::default(),
             material_assets: AssetStorage::default(),
+            texture_assets: AssetStorage::default(),
             mesh_names: HashMap::new(),
             material_names: HashMap::new(),
+            texture_names: HashMap::new(),
+            animation_clips: HashMap::new(),
             scene_entities: Vec::new(),
             hierarchy_order: Vec::new(),
             scene_index_by_id: HashMap::new(),
@@ -207,6 +251,61 @@ impl EngineApp {
         systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
     ) -> &mut Self {
         self.fixed_schedule.add_systems(systems);
+        self
+    }
+
+    pub fn add_startup_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.startup_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_pre_update_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.pre_update_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_update_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.variable_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_physics_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.physics_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_post_update_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.post_update_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_render_extract_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.render_extract_schedule.add_systems(systems);
+        self
+    }
+    pub fn add_render_systems<M>(
+        &mut self,
+        systems: impl IntoScheduleConfigs<qst_ecs::ScheduleSystem, M>,
+    ) -> &mut Self {
+        self.render_schedule.add_systems(systems);
+        self
+    }
+
+    pub fn register_animation_clip(&mut self, clip: AnimationClip) -> &mut Self {
+        self.animation_clips.insert(clip.name.clone(), clip);
         self
     }
 }

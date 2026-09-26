@@ -1,13 +1,32 @@
 use super::*;
 
 pub const LEGACY_SCENE_SCHEMA_VERSION: u32 = 1;
-pub const SCENE_SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_2: u32 = 2;
+pub const SCENE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Transform {
     pub previous: TransformState,
     pub current: TransformState,
 }
+
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct LocalTransform(pub TransformState);
+
+impl LocalTransform {
+    pub fn identity() -> Self {
+        Self(TransformState::identity())
+    }
+}
+
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct WorldTransform(pub TransformState);
+
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct PreviousWorldTransform(pub TransformState);
+
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Parent(pub EntityId);
 
 impl Default for Transform {
     fn default() -> Self {
@@ -67,6 +86,126 @@ pub struct BoxCollider {
     pub dynamic: bool,
 }
 
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioSource {
+    pub clip: Option<String>,
+    pub volume: f32,
+    pub looping: bool,
+    pub autoplay: bool,
+}
+
+impl Default for AudioSource {
+    fn default() -> Self {
+        Self {
+            clip: None,
+            volume: 1.0,
+            looping: false,
+            autoplay: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AnimationInterpolation {
+    Linear,
+    Step,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum AnimationProperty {
+    Translation,
+    Rotation,
+    Scale,
+    Joint(u32),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AnimationSampler {
+    pub input: Vec<f32>,
+    pub output: Vec<[f32; 4]>,
+    pub interpolation: AnimationInterpolation,
+}
+
+impl AnimationSampler {
+    pub fn sample(&self, time: f32) -> [f32; 4] {
+        if self.input.is_empty() || self.output.is_empty() {
+            return [0.0; 4];
+        }
+        let index = self
+            .input
+            .partition_point(|value| *value <= time)
+            .saturating_sub(1)
+            .min(self.output.len() - 1);
+        if self.interpolation == AnimationInterpolation::Step
+            || index + 1 >= self.input.len()
+            || index + 1 >= self.output.len()
+        {
+            return self.output[index];
+        }
+        let span = (self.input[index + 1] - self.input[index]).max(f32::EPSILON);
+        let alpha = ((time - self.input[index]) / span).clamp(0.0, 1.0);
+        let a = self.output[index];
+        let b = self.output[index + 1];
+        [
+            a[0] + (b[0] - a[0]) * alpha,
+            a[1] + (b[1] - a[1]) * alpha,
+            a[2] + (b[2] - a[2]) * alpha,
+            a[3] + (b[3] - a[3]) * alpha,
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AnimationChannel {
+    pub property: AnimationProperty,
+    pub sampler: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AnimationClip {
+    pub name: String,
+    pub duration: f32,
+    pub samplers: Vec<AnimationSampler>,
+    pub channels: Vec<AnimationChannel>,
+}
+
+impl AnimationClip {
+    pub fn sample(&self, time: f32) -> Vec<(AnimationProperty, [f32; 4])> {
+        self.channels
+            .iter()
+            .filter_map(|channel| {
+                self.samplers
+                    .get(channel.sampler)
+                    .map(|sampler| (channel.property.clone(), sampler.sample(time)))
+            })
+            .collect()
+    }
+}
+
+#[derive(Component, Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AnimationPlayer {
+    pub clip: Option<String>,
+    pub speed: f32,
+    pub looping: bool,
+    pub playing: bool,
+    pub time: f32,
+    #[serde(default)]
+    pub finished: bool,
+}
+
+impl Default for AnimationPlayer {
+    fn default() -> Self {
+        Self {
+            clip: None,
+            speed: 1.0,
+            looping: true,
+            playing: false,
+            time: 0.0,
+            finished: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SceneEntity {
     #[serde(default)]
@@ -74,11 +213,19 @@ pub struct SceneEntity {
     pub name: String,
     #[serde(default)]
     pub parent: Option<EntityId>,
+    #[serde(default)]
+    pub local_transform: TransformState,
+    /// Compatibility mirror for schema 1/2 callers. Schema 3 writes local_transform.
+    #[serde(default)]
     pub transform: TransformState,
     pub mesh: Option<MeshRenderer>,
     pub camera: Option<Camera>,
     pub light: Option<DirectionalLight>,
     pub collider: Option<BoxCollider>,
+    #[serde(default)]
+    pub audio_source: Option<AudioSource>,
+    #[serde(default)]
+    pub animation_player: Option<AnimationPlayer>,
 }
 
 impl Default for SceneEntity {
@@ -88,10 +235,13 @@ impl Default for SceneEntity {
             name: "Entity".into(),
             parent: None,
             transform: TransformState::identity(),
+            local_transform: TransformState::identity(),
             mesh: None,
             camera: None,
             light: None,
             collider: None,
+            audio_source: None,
+            animation_player: None,
         }
     }
 }
@@ -125,6 +275,12 @@ impl SceneAsset {
     }
 
     pub fn push_entity(&mut self, mut entity: SceneEntity) -> EntityId {
+        if entity.local_transform == TransformState::identity()
+            && entity.transform != TransformState::identity()
+        {
+            entity.local_transform = entity.transform;
+        }
+        entity.transform = entity.local_transform;
         let id = self.allocate_entity_id();
         entity.id = id;
         self.entities.push(entity);
@@ -151,7 +307,15 @@ impl SceneAsset {
         self.entities
             .iter()
             .map(|entity| {
-                let mut commands = world.spawn((Transform::from_state(entity.transform),));
+                let mut commands = world.spawn((
+                    Transform::from_state(entity.local_transform),
+                    LocalTransform(entity.local_transform),
+                    WorldTransform(entity.local_transform),
+                    PreviousWorldTransform(entity.local_transform),
+                ));
+                if let Some(parent) = entity.parent {
+                    commands.insert(Parent(parent));
+                }
                 if let Some(mesh) = entity.mesh.clone() {
                     commands.insert(mesh);
                 }
@@ -163,6 +327,12 @@ impl SceneAsset {
                 }
                 if let Some(collider) = entity.collider {
                     commands.insert(collider);
+                }
+                if let Some(audio) = entity.audio_source.clone() {
+                    commands.insert(audio);
+                }
+                if let Some(animation) = entity.animation_player.clone() {
+                    commands.insert(animation);
                 }
                 commands.id()
             })
@@ -234,7 +404,20 @@ impl SceneAsset {
             )));
         }
         self.hierarchy_order()?;
-        let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+        if self.entities.iter().any(|entity| {
+            !entity.local_transform.translation.is_finite()
+                || !entity.local_transform.rotation.is_finite()
+                || !entity.local_transform.scale.is_finite()
+        }) {
+            return Err(EngineError::Unsupported(
+                "scene contains non-finite transform".into(),
+            ));
+        }
+        let mut normalized = self.clone();
+        for entity in &mut normalized.entities {
+            entity.transform = entity.local_transform;
+        }
+        let text = ron::ser::to_string_pretty(&normalized, ron::ser::PrettyConfig::default())
             .map_err(|error| EngineError::Serialization(error.to_string()))?;
         fs::write(path, text)?;
         Ok(())
@@ -255,6 +438,7 @@ impl SceneAsset {
                 .collect::<Vec<_>>();
             for (index, entity) in scene.entities.iter_mut().enumerate() {
                 entity.id = ids[index];
+                entity.local_transform = entity.transform;
                 entity.parent = match legacy_parents[index] {
                     Some(parent) => Some(*ids.get(parent).ok_or_else(|| {
                         EngineError::Unsupported(format!(
@@ -265,7 +449,13 @@ impl SceneAsset {
                 };
             }
             scene.schema_version = SCENE_SCHEMA_VERSION;
-            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 2");
+            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 3");
+        } else if scene.schema_version == SCHEMA_2 {
+            for entity in &mut scene.entities {
+                entity.local_transform = entity.transform;
+            }
+            scene.schema_version = SCENE_SCHEMA_VERSION;
+            tracing::info!(scene = %scene.name, "migrated scene schema 2 to schema 3");
         } else if scene.schema_version != SCENE_SCHEMA_VERSION {
             return Err(EngineError::Unsupported(format!(
                 "scene schema {}",
@@ -273,7 +463,103 @@ impl SceneAsset {
             )));
         }
         scene.hierarchy_order()?;
+        for entity in &mut scene.entities {
+            if !entity.local_transform.translation.is_finite()
+                || !entity.local_transform.rotation.is_finite()
+                || !entity.local_transform.scale.is_finite()
+            {
+                return Err(EngineError::Unsupported(format!(
+                    "entity {} has non-finite transform",
+                    entity.id.0
+                )));
+            }
+            entity.transform = entity.local_transform;
+        }
         Ok(scene)
+    }
+
+    pub fn create_entity(&mut self, name: impl Into<String>) -> EntityId {
+        self.push_entity(SceneEntity {
+            name: name.into(),
+            ..SceneEntity::default()
+        })
+    }
+
+    pub fn delete_entity_tree(&mut self, id: EntityId) -> EngineResult<()> {
+        self.validate_ids()?;
+        let mut remove = std::collections::HashSet::new();
+        let mut changed = true;
+        remove.insert(id);
+        while changed {
+            changed = false;
+            for entity in &self.entities {
+                if entity.parent.is_some_and(|parent| remove.contains(&parent))
+                    && remove.insert(entity.id)
+                {
+                    changed = true;
+                }
+            }
+        }
+        if !self.entities.iter().any(|entity| entity.id == id) {
+            return Err(EngineError::AssetNotFound(format!("entity {}", id.0)));
+        }
+        self.entities.retain(|entity| !remove.contains(&entity.id));
+        Ok(())
+    }
+
+    pub fn duplicate_entity_tree(&mut self, id: EntityId) -> EngineResult<EntityId> {
+        self.validate_ids()?;
+        let order = self.hierarchy_order()?;
+        let mut ids = std::collections::HashMap::new();
+        let mut copies = Vec::new();
+        let mut next_id = self.allocate_entity_id().0;
+        for &index in &order {
+            let source = &self.entities[index];
+            if source.id == id
+                || source
+                    .parent
+                    .is_some_and(|parent| ids.contains_key(&parent))
+            {
+                let new_id = EntityId::new(next_id);
+                next_id = next_id.saturating_add(1).max(1);
+                ids.insert(source.id, new_id);
+                let mut copy = source.clone();
+                copy.id = new_id;
+                copy.parent = source.parent.and_then(|parent| ids.get(&parent).copied());
+                copies.push(copy);
+            }
+        }
+        let root = ids
+            .get(&id)
+            .copied()
+            .ok_or_else(|| EngineError::AssetNotFound(format!("entity {}", id.0)))?;
+        self.entities.extend(copies);
+        Ok(root)
+    }
+
+    pub fn reparent(&mut self, id: EntityId, parent: Option<EntityId>) -> EngineResult<()> {
+        self.validate_ids()?;
+        if let Some(parent) = parent {
+            if parent == id || self.index_of(parent).is_none() {
+                return Err(EngineError::Unsupported("invalid reparent target".into()));
+            }
+            let mut cursor = Some(parent);
+            while let Some(current) = cursor {
+                if current == id {
+                    return Err(EngineError::Unsupported(
+                        "reparent would create cycle".into(),
+                    ));
+                }
+                cursor = self
+                    .index_of(current)
+                    .and_then(|index| self.entities[index].parent);
+            }
+        }
+        let index = self
+            .index_of(id)
+            .ok_or_else(|| EngineError::AssetNotFound(format!("entity {}", id.0)))?;
+        self.entities[index].parent = parent;
+        Ok(())
     }
 }
 

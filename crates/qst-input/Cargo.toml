@@ -1,5 +1,5 @@
 [package]
-name = "qst-render"
+name = "qst-input"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bytemuck.workspace = true
+bevy_ecs.workspace = true
 qst-core = { path = "../qst-core" }
-tracing.workspace = true
-wgpu.workspace = true
 winit.workspace = true
-image.workspace = true
-
-[dev-dependencies]
-pollster = "0.4"

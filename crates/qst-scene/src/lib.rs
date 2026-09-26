@@ -10,8 +10,11 @@ mod scene;
 pub use gltf::{GltfImport, ImportedMesh, import_gltf, import_gltf_cached};
 pub use qst_core::EntityId;
 pub use scene::{
-    BoxCollider, Camera, DirectionalLight, LEGACY_SCENE_SCHEMA_VERSION, MeshRenderer,
-    SCENE_SCHEMA_VERSION, SceneAsset, SceneEntity, SceneHandle, Transform,
+    AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
+    AnimationSampler, AudioSource, BoxCollider, Camera, DirectionalLight,
+    LEGACY_SCENE_SCHEMA_VERSION, LocalTransform, MeshRenderer, Parent, PreviousWorldTransform,
+    SCENE_SCHEMA_VERSION, SCHEMA_2, SceneAsset, SceneEntity, SceneHandle, Transform,
+    WorldTransform,
 };
 #[cfg(test)]
 mod tests;

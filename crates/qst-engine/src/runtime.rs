@@ -34,6 +34,10 @@ impl ApplicationHandler for EngineApp {
         match event_loop.create_window(attributes) {
             Ok(window) => {
                 let window = Arc::new(window);
+                if let Some(mut input) = self.world.get_resource_mut::<InputState>() {
+                    input.focused = true;
+                }
+                self.startup_schedule.run(&mut self.world);
                 match pollster::block_on(Renderer::new(window.clone())) {
                     Ok(mut renderer) => {
                         renderer.features.append(&mut self.pending_render_features);
@@ -89,6 +93,9 @@ impl ApplicationHandler for EngineApp {
         if let (Some(editor), Some(window)) = (&mut self.editor, &self.window) {
             editor.on_window_event(window, &event);
         }
+        if let Some(mut input) = self.world.get_resource_mut::<InputState>() {
+            input.handle_window_event(&event);
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -99,6 +106,12 @@ impl ApplicationHandler for EngineApp {
             WindowEvent::RedrawRequested => {
                 let _span = tracing::info_span!("frame").entered();
                 self.poll_asset_reloads();
+                let input_start = Instant::now();
+                if let Some(mut input) = self.world.get_resource_mut::<InputState>() {
+                    input.clear_transient();
+                }
+                self.pre_update_schedule.run(&mut self.world);
+                self.diagnostics.input_update_seconds = input_start.elapsed().as_secs_f32();
                 let now = Instant::now();
                 let delta = now.duration_since(self.last_frame);
                 self.last_frame = now;
@@ -117,6 +130,8 @@ impl ApplicationHandler for EngineApp {
                 #[cfg(not(feature = "editor"))]
                 let step_once = false;
                 if !paused {
+                    self.update_animations(delta.as_secs_f32());
+                    self.variable_schedule.run(&mut self.world);
                     self.update_fixed(delta);
                 } else if step_once {
                     self.update_fixed(std::time::Duration::from_secs_f32(
@@ -162,6 +177,8 @@ impl ApplicationHandler for EngineApp {
                     }
                 }
                 let snapshot = self.render_snapshot();
+                self.render_extract_schedule.run(&mut self.world);
+                self.render_schedule.run(&mut self.world);
                 let start = Instant::now();
                 let _render_span = tracing::info_span!("render").entered();
                 if let Some(renderer) = &mut self.renderer {
@@ -191,6 +208,7 @@ impl ApplicationHandler for EngineApp {
                     self.diagnostics.render_draw_calls = stats.draw_calls;
                     self.diagnostics.instance_upload_bytes = stats.instance_upload_bytes;
                     self.diagnostics.render_fallback = stats.fallback;
+                    self.diagnostics.skipped_instances = stats.skipped_instances;
                 }
                 self.diagnostics.loaded_asset_count = self.assets.records().count();
                 self.diagnostics.render_seconds = start.elapsed().as_secs_f32();

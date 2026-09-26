@@ -2,6 +2,7 @@ use super::*;
 
 impl EngineApp {
     pub fn load_scene(&mut self, path: impl AsRef<Path>) -> EngineResult<&mut Self> {
+        let scene_load_start = Instant::now();
         let path = std::fs::canonicalize(path)?;
         let mut scene = SceneAsset::load_ron(&path)?;
         let imported = if let Some(source) = scene.source_gltf.as_ref() {
@@ -11,7 +12,10 @@ impl EngineApp {
                 path.parent().unwrap_or(Path::new(".")).join(source)
             };
             let source = std::fs::canonicalize(source)?;
+            let import_start = Instant::now();
             let (imported, cache_hit) = import_gltf_cached(&source)?;
+            self.diagnostics.asset_import_seconds = import_start.elapsed().as_secs_f32();
+            self.diagnostics.cache_load_seconds = self.diagnostics.asset_import_seconds;
             if cache_hit {
                 self.diagnostics.asset_cache_hits += 1;
             } else {
@@ -34,6 +38,7 @@ impl EngineApp {
         self.assets.watch_path(&path)?;
         self.scene_path = Some(path);
         self.saved_scene_contents = None;
+        self.diagnostics.scene_load_seconds = scene_load_start.elapsed().as_secs_f32();
         Ok(self)
     }
 
@@ -55,6 +60,15 @@ impl EngineApp {
     }
 
     pub fn set_scene(&mut self, scene: SceneAsset) -> EngineResult<&mut Self> {
+        let mut scene = scene;
+        for entity in &mut scene.entities {
+            if entity.local_transform == TransformState::identity()
+                && entity.transform != TransformState::identity()
+            {
+                entity.local_transform = entity.transform;
+            }
+            entity.transform = entity.local_transform;
+        }
         let hierarchy_order = scene.hierarchy_order()?;
         self.fixed_time.accumulator_seconds = 0.0;
         self.last_frame = Instant::now();
@@ -87,8 +101,26 @@ impl EngineApp {
             index: 0,
             delta_seconds: self.fixed_time.step_seconds,
         });
+        self.world.insert_resource(InputState::default());
         self.physics = PhysicsWorld::new(PhysicsConfig::default());
         self.scene_entities = self.scene.instantiate(&mut self.world);
+        for (index, entity) in self.scene_entities.iter().copied().enumerate() {
+            let state = self.scene.entities[index].local_transform;
+            self.world.entity_mut(entity).insert((
+                LocalTransform(state),
+                WorldTransform(state),
+                PreviousWorldTransform(state),
+            ));
+            if let Some(parent) = self.scene.entities[index].parent {
+                self.world.entity_mut(entity).insert(Parent(parent));
+            }
+            if let Some(audio) = self.scene.entities[index].audio_source.clone() {
+                self.world.entity_mut(entity).insert(audio);
+            }
+            if let Some(animation) = self.scene.entities[index].animation_player.clone() {
+                self.world.entity_mut(entity).insert(animation);
+            }
+        }
         self.physics.sync_from_scene(&mut self.world);
         Ok(self)
     }
@@ -154,8 +186,12 @@ impl EngineApp {
     }
 
     pub(crate) fn apply_gltf_import(&mut self, imported: GltfImport) -> EngineResult<()> {
+        let animations = imported.animations.clone();
         self.set_scene(imported.scene)?;
         self.register_gltf_assets(imported.meshes);
+        for animation in animations {
+            self.register_animation_clip(animation);
+        }
         Ok(())
     }
 
@@ -174,7 +210,7 @@ impl EngineApp {
                     indices: mesh.indices,
                 },
             );
-            self.register_material(mesh.name.clone(), MaterialAsset { color: mesh.color });
+            self.register_material(mesh.name.clone(), MaterialAsset::from_color(mesh.color));
             self.gltf_mesh_names.push(mesh.name);
         }
     }
@@ -221,6 +257,23 @@ impl EngineApp {
         handle
     }
 
+    pub fn register_texture(
+        &mut self,
+        name: impl Into<String>,
+        texture: TextureAsset,
+    ) -> Handle<TextureAsset> {
+        let name = name.into();
+        if let Some(old) = self.texture_names.remove(&name) {
+            self.texture_assets.remove(old);
+            self.assets.invalidate::<TextureAsset>(&name);
+        }
+        let handle = self.assets.load::<TextureAsset>(&name);
+        self.texture_assets.insert(handle, texture);
+        let _ = self.assets.mark_loaded(handle);
+        self.texture_names.insert(name, handle);
+        handle
+    }
+
     pub(crate) fn propagate_scene_hierarchy(&mut self, snap_interpolation: bool) {
         for &index in &self.hierarchy_order {
             let Some(parent_id) = self.scene.entities[index].parent else {
@@ -263,6 +316,15 @@ impl EngineApp {
                 }
                 transform.current = next;
             }
+            if let Some(mut world_transform) = self.world.get_mut::<WorldTransform>(entity) {
+                world_transform.0 = next;
+            }
+            if snap_interpolation
+                && let Some(mut previous_world) =
+                    self.world.get_mut::<PreviousWorldTransform>(entity)
+            {
+                previous_world.0 = next;
+            }
             self.physics.set_entity_pose(entity, next);
             if let Some(mut collider) = self.world.get_mut::<BoxCollider>(entity)
                 && let Some(extents) =
@@ -274,7 +336,11 @@ impl EngineApp {
         }
         for (index, &entity) in self.scene_entities.iter().enumerate() {
             if let Some(transform) = self.world.get::<Transform>(entity) {
-                self.last_scene_transforms[index] = transform.current;
+                let current = transform.current;
+                self.last_scene_transforms[index] = current;
+                if let Some(mut world_transform) = self.world.get_mut::<WorldTransform>(entity) {
+                    world_transform.0 = current;
+                }
             }
         }
     }
@@ -307,6 +373,7 @@ impl EngineApp {
             let previous_child = self.scene.entities[child_index].transform;
             if let Some(next) = transformed_state(delta, previous_child) {
                 self.scene.entities[child_index].transform = next;
+                self.scene.entities[child_index].local_transform = next;
                 self.authored_transforms[child_index] = next;
                 if let Some(collider) = self.scene.entities[child_index].collider.as_mut()
                     && let Some(extents) =

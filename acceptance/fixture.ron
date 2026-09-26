@@ -1,0 +1,9 @@
+(
+    schema_version: 3,
+    name: "quasar-0.0.2-foundation",
+    source_gltf: None,
+    entities: [
+        (id: 1, name: "Root", parent: None, local_transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: None, light: None, collider: None, audio_source: None, animation_player: None),
+        (id: 2, name: "Child", parent: Some(1), local_transform: (translation: (0.0, 1.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 1.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: None, light: None, collider: None, audio_source: None, animation_player: None),
+    ],
+)

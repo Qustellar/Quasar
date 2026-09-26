@@ -260,9 +260,8 @@ impl RenderFeature for ForwardFeature {
         )> = Vec::new();
         for instance in &self.instances {
             let key = (instance.mesh.id, instance.material.id);
-            if let Some((_, _, values)) = groups
-                .iter_mut()
-                .find(|(mesh, material, _)| (*mesh, *material) == key)
+            if let Some((mesh, material, values)) = groups.last_mut()
+                && (*mesh, *material) == key
             {
                 values.push(InstanceData {
                     model: transform_matrix(instance.transform).to_cols_array_2d(),

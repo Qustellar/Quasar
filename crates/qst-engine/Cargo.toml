@@ -7,16 +7,18 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["audio"]
+audio = ["qst-audio/rodio-backend"]
 editor = ["dep:qst-editor"]
 tracy = ["dep:tracing-tracy"]
 
 [dependencies]
 qst-asset = { path = "../qst-asset" }
-qst-audio = { path = "../qst-audio" }
+qst-audio = { path = "../qst-audio", default-features = false }
 qst-core = { path = "../qst-core" }
 qst-ecs = { path = "../qst-ecs" }
 qst-physics = { path = "../qst-physics" }
+qst-input = { path = "../qst-input" }
 qst-render = { path = "../qst-render" }
 qst-scene = { path = "../qst-scene" }
 qst-editor = { path = "../qst-editor", optional = true }

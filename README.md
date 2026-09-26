@@ -1,10 +1,10 @@
 # Quasar Engine
 
-Quasar 0.0.1 is Qustellar Game's Rust-first 3D engine developer preview. It is a runtime with a thin embedded scene tool, designed around replaceable systems, explicit data flow, stable scene identities, source-backed import caching, and profiling-driven optimization.
+Quasar 0.0.2 is Qustellar Game's Rust-first 3D engine developer preview. It is a runtime with a thin embedded scene tool, designed around replaceable systems, explicit data flow, stable scene identities, source-backed import caching, and profiling-driven optimization.
 
-## Phase 1 target
+## 0.0.2 target
 
-The Phase 1 local baseline is a fixed-step runtime that can load and save a scene, display a glTF scene, run Rapier box physics, interpolate rendering, hot-reload assets, and expose coarse frame-time and working-set diagnostics. Both `playground` and the separate `acceptance/consumer` workspace depend only on `qst-engine`.
+The 0.0.2 foundation adds fixed runtime stages, input state, schema 3 local/world transforms, PNG/JPEG texture decoding, PBR material data, glTF animation clips, an audio backend boundary, editor scene CRUD primitives, and the existing Rapier, hot-reload, and instanced forward-rendering paths. Both `playground` and the separate `acceptance/consumer` workspace depend only on `qst-engine`.
 
 ## Run
 
@@ -17,15 +17,15 @@ cargo run -p playground -- path/to/saved-scene.ron
 
 The default playground loads `assets/playground.ron`, which references `assets/playground.gltf` and contains a falling box, floor, camera, and directional light. `acceptance/consumer` is a separate Cargo workspace that depends only on `qst-engine` and loads the same scene. Passing a glTF or GLB path imports that scene and watches its directory for changes. The editor feature overlays scene and diagnostics panels in the runtime window. `EngineApp::save_scene` and `EngineApp::load_scene` are the RON APIs. Saved scenes imported from glTF retain a source path and restore their mesh and material resources when loaded by a fresh engine process. Programmatically registered resources still need registration before loading their scene.
 
-Scene entities can form a parent-child hierarchy. Schema 2 stores stable `EntityId` values and world transforms; schema 1 files migrate automatically on load. Moving, rotating, or scaling a parent carries its descendants, including cameras and physics boxes. In the optional editor, select an entity in the scene tree to edit its position, rotation, scale, camera, light, or collider values, then save the scene.
+Scene entities can form a parent-child hierarchy. Schema 3 stores stable `EntityId` values and local transforms; schema 1 and schema 2 files migrate automatically on load. Runtime `LocalTransform`, `WorldTransform`, and `PreviousWorldTransform` components keep authored data separate from derived render and physics state. In the optional editor, select an entity in the scene tree to edit its transform, camera, light, or collider values, then save the scene.
 
 ## Status
 
-The Phase 1 local acceptance is recorded in [Phase 1 acceptance](docs/phase-1-acceptance.md). Version 0.0.1 adds schema 1 to schema 2 scene migration with stable `EntityId` values, transparent glTF import caching, instanced forward rendering, and render batch diagnostics. Editor selection, parent transform editing, pause, save, and scene reopening were exercised in a Windows window. Broader glTF variants and file writers remain compatibility work beyond this preview.
+The 0.0.1 acceptance remains the compatibility baseline. Version 0.0.2 extends it with schema 3 migration, fixed stage registration, `qst-input`, texture import, animation sampling, audio state management, scene CRUD methods, and richer diagnostics. The forward renderer remains a verifiable baseline rather than a claim of complete AAA PBR.
 
 ## Non-goals
 
-Phase 1 does not include a full PBR renderer, custom RHI, self-written ECS storage, scripting or blueprints, an independent IDE, a project/package manager, console certification, a marketplace, Nanite-style virtual geometry, or first-party game development.
+0.0.2 does not include skinning, compressed texture formats, deferred or ray-traced rendering, GPU culling, complete transparency sorting, spatial audio, scripting or blueprints, an independent IDE, a project/package manager, console certification, a marketplace, or Nanite-style virtual geometry.
 
 ## Memory target
 
@@ -33,11 +33,11 @@ The 1080p playground resident working-set target is below 400 MB (decimal). It i
 
 ## Workspace
 
-The runtime is split into `qst-core`, `qst-ecs`, `qst-asset`, `qst-scene`, `qst-physics`, `qst-render`, `qst-audio`, `qst-editor`, and the public `qst-engine` facade. `playground` is the minimal outside crate.
+The runtime is split into `qst-core`, `qst-ecs`, `qst-input`, `qst-asset`, `qst-scene`, `qst-physics`, `qst-render`, `qst-audio`, `qst-editor`, and the public `qst-engine` facade. `playground` is the minimal outside crate.
 
 Architecture decisions are in [ADR 0001](docs/adr/0001-runtime-boundaries.md) and [Architecture](docs/architecture.md).
 
-The recommended integration surface is `qst-engine::prelude`; the lower-level workspace crates remain replaceable implementation boundaries. The 0.0.1 Windows validation uses the VS2022 x64 environment from `vcvars64.bat` before running Cargo.
+The recommended integration surface is `qst-engine::prelude`; the lower-level workspace crates remain replaceable implementation boundaries. The Windows validation uses the VS2022 x64 environment from `vcvars64.bat` before running Cargo.
 
 ## License
 

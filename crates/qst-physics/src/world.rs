@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use qst_ecs::{Entity, World};
-use qst_scene::{BoxCollider, Transform};
+use qst_scene::{BoxCollider, Transform, WorldTransform};
 use rapier3d::prelude::*;
 
 fn physics_rotation(rotation: qst_core::glam::Quat) -> rapier3d::math::Rotation {
@@ -149,6 +149,7 @@ impl PhysicsWorld {
             }
         }
         for (&entity, &handle) in &self.entity_bodies {
+            let mut synced = None;
             if let (Some(body), Some(mut transform)) =
                 (self.bodies.get(handle), world.get_mut::<Transform>(entity))
             {
@@ -156,6 +157,12 @@ impl PhysicsWorld {
                 transform.current.translation = qst_core::glam::Vec3::new(t.x, t.y, t.z);
                 let r = body.rotation();
                 transform.current.rotation = qst_core::glam::Quat::from_xyzw(r.x, r.y, r.z, r.w);
+                synced = Some(transform.current);
+            }
+            if let Some(state) = synced
+                && let Some(mut world_transform) = world.get_mut::<WorldTransform>(entity)
+            {
+                world_transform.0 = state;
             }
         }
     }

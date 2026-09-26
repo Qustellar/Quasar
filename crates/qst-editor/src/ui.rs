@@ -6,11 +6,20 @@ pub enum PlayState {
     Paused,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GizmoMode {
+    #[default]
+    Translate,
+    Rotate,
+    Scale,
+}
+
 pub struct EditorPlugin {
     pub play_state: PlayState,
     pub selected_entity: Option<EntityId>,
     pub step_requested: bool,
     pub save_requested: bool,
+    pub gizmo_mode: GizmoMode,
 }
 
 impl Default for EditorPlugin {
@@ -20,7 +29,44 @@ impl Default for EditorPlugin {
             selected_entity: None,
             step_requested: false,
             save_requested: false,
+            gizmo_mode: GizmoMode::Translate,
         }
+    }
+}
+
+impl EditorPlugin {
+    pub fn create_entity(&mut self, scene: &mut SceneAsset, name: impl Into<String>) -> EntityId {
+        let id = scene.create_entity(name);
+        self.selected_entity = Some(id);
+        id
+    }
+    pub fn delete_selected(&mut self, scene: &mut SceneAsset) -> qst_core::EngineResult<()> {
+        if let Some(id) = self.selected_entity {
+            scene.delete_entity_tree(id)?;
+            self.selected_entity = None;
+        }
+        Ok(())
+    }
+    pub fn duplicate_selected(
+        &mut self,
+        scene: &mut SceneAsset,
+    ) -> qst_core::EngineResult<Option<EntityId>> {
+        let Some(id) = self.selected_entity else {
+            return Ok(None);
+        };
+        let copy = scene.duplicate_entity_tree(id)?;
+        self.selected_entity = Some(copy);
+        Ok(Some(copy))
+    }
+    pub fn reparent_selected(
+        &mut self,
+        scene: &mut SceneAsset,
+        parent: Option<EntityId>,
+    ) -> qst_core::EngineResult<()> {
+        if let Some(id) = self.selected_entity {
+            scene.reparent(id, parent)?;
+        }
+        Ok(())
     }
 }
 

@@ -8,12 +8,24 @@ pub struct ImportedMesh {
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub color: [f32; 4],
+    #[serde(default)]
+    pub uvs: Vec<[f32; 2]>,
+    #[serde(default)]
+    pub tangents: Vec<[f32; 4]>,
+    #[serde(default)]
+    pub base_color_texture: Option<String>,
+    #[serde(default)]
+    pub metallic_roughness_texture: Option<String>,
+    #[serde(default)]
+    pub normal_texture: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GltfImport {
     pub scene: SceneAsset,
     pub meshes: Vec<ImportedMesh>,
+    #[serde(default)]
+    pub animations: Vec<AnimationClip>,
 }
 
 pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
@@ -27,6 +39,7 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
                 .unwrap_or("gltf"),
         ),
         meshes: Vec::new(),
+        animations: Vec::new(),
     };
     if let Some(source_scene) = document
         .default_scene()
@@ -35,6 +48,60 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
         for node in source_scene.nodes() {
             append_node(&mut result, &buffers, &node, Mat4::IDENTITY, None)?;
         }
+    }
+    for animation in document.animations() {
+        let mut samplers = Vec::new();
+        let mut channels = Vec::new();
+        let mut duration = 0.0_f32;
+        for channel in animation.channels() {
+            let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+            let Some(input) = reader.read_inputs() else {
+                continue;
+            };
+            let input: Vec<f32> = input.collect();
+            let Some(output) = reader.read_outputs() else {
+                continue;
+            };
+            let (property, output): (AnimationProperty, Vec<[f32; 4]>) = match output {
+                ::gltf::animation::util::ReadOutputs::Translations(values) => (
+                    AnimationProperty::Translation,
+                    values
+                        .map(|value| [value[0], value[1], value[2], 0.0])
+                        .collect(),
+                ),
+                ::gltf::animation::util::ReadOutputs::Rotations(values) => (
+                    AnimationProperty::Rotation,
+                    values
+                        .into_f32()
+                        .map(|value| [value[0], value[1], value[2], value[3]])
+                        .collect(),
+                ),
+                ::gltf::animation::util::ReadOutputs::Scales(values) => (
+                    AnimationProperty::Scale,
+                    values
+                        .map(|value| [value[0], value[1], value[2], 0.0])
+                        .collect(),
+                ),
+                ::gltf::animation::util::ReadOutputs::MorphTargetWeights(_) => continue,
+            };
+            duration = duration.max(input.last().copied().unwrap_or(0.0));
+            let sampler = samplers.len();
+            samplers.push(AnimationSampler {
+                input,
+                output,
+                interpolation: match channel.sampler().interpolation() {
+                    ::gltf::animation::Interpolation::Step => AnimationInterpolation::Step,
+                    _ => AnimationInterpolation::Linear,
+                },
+            });
+            channels.push(AnimationChannel { property, sampler });
+        }
+        result.animations.push(AnimationClip {
+            name: animation.name().unwrap_or("Animation").into(),
+            duration,
+            samplers,
+            channels,
+        });
     }
     Ok(result)
 }
@@ -172,6 +239,19 @@ fn append_node(
                 .read_normals()
                 .map(|normals| normals.collect())
                 .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
+            let uvs = reader
+                .read_tex_coords(0)
+                .map(|values| {
+                    values
+                        .into_f32()
+                        .map(|value| [value[0], value[1]])
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tangents = reader
+                .read_tangents()
+                .map(|values| values.collect())
+                .unwrap_or_default();
             let indices: Vec<u32> = reader
                 .read_indices()
                 .map(|indices| indices.into_u32().collect())
@@ -181,12 +261,43 @@ fn append_node(
                 .material()
                 .pbr_metallic_roughness()
                 .base_color_factor();
+            let material = primitive.material();
+            let pbr = material.pbr_metallic_roughness();
+            let base_color_texture = pbr.base_color_texture().map(|texture| {
+                texture
+                    .texture()
+                    .source()
+                    .name()
+                    .unwrap_or("texture")
+                    .to_owned()
+            });
+            let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|texture| {
+                texture
+                    .texture()
+                    .source()
+                    .name()
+                    .unwrap_or("texture")
+                    .to_owned()
+            });
+            let normal_texture = material.normal_texture().map(|texture| {
+                texture
+                    .texture()
+                    .source()
+                    .name()
+                    .unwrap_or("texture")
+                    .to_owned()
+            });
             result.meshes.push(ImportedMesh {
                 name: name.clone(),
                 positions,
                 normals,
                 indices,
                 color,
+                uvs,
+                tangents,
+                base_color_texture,
+                metallic_roughness_texture,
+                normal_texture,
             });
             result.scene.entities.push(SceneEntity {
                 id: EntityId::new(result.scene.entities.len() as u64 + 1),

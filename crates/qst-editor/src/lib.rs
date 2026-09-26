@@ -5,4 +5,4 @@ use winit::{event::WindowEvent, window::Window};
 mod runtime;
 mod ui;
 pub use runtime::EditorRuntime;
-pub use ui::{EditorPlugin, PlayState};
+pub use ui::{EditorPlugin, GizmoMode, PlayState};

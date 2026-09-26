@@ -8,6 +8,24 @@ pub struct FixedUpdate;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
 pub struct VariableUpdate;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct Startup;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct PreUpdate;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct Physics;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct PostUpdate;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct RenderExtract;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ScheduleLabel)]
+pub struct Render;
+
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct SimulationStep {
     pub index: u64,
@@ -25,4 +43,23 @@ pub fn make_fixed_schedule() -> Schedule {
 
 pub fn make_variable_schedule() -> Schedule {
     Schedule::new(VariableUpdate)
+}
+
+pub fn make_startup_schedule() -> Schedule {
+    Schedule::new(Startup)
+}
+pub fn make_pre_update_schedule() -> Schedule {
+    Schedule::new(PreUpdate)
+}
+pub fn make_physics_schedule() -> Schedule {
+    Schedule::new(Physics)
+}
+pub fn make_post_update_schedule() -> Schedule {
+    Schedule::new(PostUpdate)
+}
+pub fn make_render_extract_schedule() -> Schedule {
+    Schedule::new(RenderExtract)
+}
+pub fn make_render_schedule() -> Schedule {
+    Schedule::new(Render)
 }
