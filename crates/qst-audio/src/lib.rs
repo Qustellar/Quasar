@@ -43,7 +43,13 @@ impl Default for AudioSource {
 }
 
 pub trait AudioBackend: Send {
-    fn play(&mut self, clip: Handle<AudioClip>, volume: f32, looping: bool) -> EngineResult<()>;
+    fn play(
+        &mut self,
+        clip: Handle<AudioClip>,
+        data: &AudioClip,
+        volume: f32,
+        looping: bool,
+    ) -> EngineResult<()>;
     fn pause(&mut self, clip: Handle<AudioClip>) -> EngineResult<()>;
     fn stop(&mut self, clip: Handle<AudioClip>) -> EngineResult<()>;
 }
@@ -56,21 +62,61 @@ pub struct NullAudioBackend {
 /// Default desktop backend boundary. The state machine remains usable on
 /// headless machines and can be replaced without changing scene APIs.
 #[cfg(feature = "rodio-backend")]
-#[derive(Default)]
 pub struct RodioAudioBackend {
+    stream: Option<rodio::OutputStream>,
+    sinks: HashMap<Handle<AudioClip>, rodio::Sink>,
     fallback: NullAudioBackend,
 }
 
 #[cfg(feature = "rodio-backend")]
+impl Default for RodioAudioBackend {
+    fn default() -> Self {
+        let stream = rodio::OutputStreamBuilder::open_default_stream().ok();
+        Self {
+            stream,
+            sinks: HashMap::new(),
+            fallback: NullAudioBackend::default(),
+        }
+    }
+}
+
+#[cfg(feature = "rodio-backend")]
 impl AudioBackend for RodioAudioBackend {
-    fn play(&mut self, clip: Handle<AudioClip>, volume: f32, looping: bool) -> EngineResult<()> {
-        self.fallback.play(clip, volume, looping)
+    fn play(
+        &mut self,
+        clip: Handle<AudioClip>,
+        data: &AudioClip,
+        volume: f32,
+        looping: bool,
+    ) -> EngineResult<()> {
+        let Some(stream) = &self.stream else {
+            return self.fallback.play(clip, data, volume, looping);
+        };
+        let source = rodio::Decoder::try_from(std::io::Cursor::new(data.bytes.clone()))
+            .map_err(|error| EngineError::Runtime(error.to_string()))?;
+        let sink = rodio::Sink::connect_new(stream.mixer());
+        sink.set_volume(volume.max(0.0));
+        if looping {
+            use rodio::Source;
+            sink.append(source.repeat_infinite());
+        } else {
+            sink.append(source);
+        }
+        sink.play();
+        self.sinks.insert(clip, sink);
+        Ok(())
     }
     fn pause(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
-        self.fallback.pause(clip)
+        if let Some(sink) = self.sinks.get(&clip) {
+            sink.pause();
+        }
+        Ok(())
     }
     fn stop(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
-        self.fallback.stop(clip)
+        if let Some(sink) = self.sinks.remove(&clip) {
+            sink.stop();
+        }
+        Ok(())
     }
 }
 
@@ -81,7 +127,13 @@ impl NullAudioBackend {
 }
 
 impl AudioBackend for NullAudioBackend {
-    fn play(&mut self, clip: Handle<AudioClip>, _volume: f32, _looping: bool) -> EngineResult<()> {
+    fn play(
+        &mut self,
+        clip: Handle<AudioClip>,
+        _data: &AudioClip,
+        _volume: f32,
+        _looping: bool,
+    ) -> EngineResult<()> {
         self.states.insert(clip, AudioPlaybackState::Playing);
         Ok(())
     }
@@ -98,6 +150,7 @@ impl AudioBackend for NullAudioBackend {
 pub struct AudioPlayer<B: AudioBackend = NullAudioBackend> {
     pub backend: B,
     states: HashMap<Handle<AudioClip>, AudioPlaybackState>,
+    clips: HashMap<Handle<AudioClip>, AudioClip>,
 }
 
 impl<B: AudioBackend + Default> Default for AudioPlayer<B> {
@@ -105,6 +158,7 @@ impl<B: AudioBackend + Default> Default for AudioPlayer<B> {
         Self {
             backend: B::default(),
             states: HashMap::new(),
+            clips: HashMap::new(),
         }
     }
 }
@@ -114,7 +168,12 @@ impl<B: AudioBackend> AudioPlayer<B> {
         let clip = source
             .clip
             .ok_or_else(|| EngineError::AssetNotFound("audio clip".into()))?;
-        self.backend.play(clip, source.volume, source.looping)?;
+        let data = self
+            .clips
+            .get(&clip)
+            .ok_or_else(|| EngineError::AssetNotFound("audio clip data".into()))?;
+        self.backend
+            .play(clip, data, source.volume, source.looping)?;
         self.states.insert(clip, AudioPlaybackState::Playing);
         Ok(())
     }
@@ -130,6 +189,10 @@ impl<B: AudioBackend> AudioPlayer<B> {
     }
     pub fn state(&self, clip: Handle<AudioClip>) -> AudioPlaybackState {
         self.states.get(&clip).copied().unwrap_or_default()
+    }
+
+    pub fn register_clip(&mut self, clip: Handle<AudioClip>, data: AudioClip) {
+        self.clips.insert(clip, data);
     }
 }
 

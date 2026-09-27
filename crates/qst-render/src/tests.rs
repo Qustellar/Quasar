@@ -73,9 +73,7 @@ fn forward_feature_draws_nonblank_pixels() {
         );
         forward.upload_material(
             material_handle,
-            MaterialAsset {
-                color: [1.0, 0.1, 0.1, 1.0],
-            },
+            MaterialAsset::from_color([1.0, 0.1, 0.1, 1.0]),
         );
         let snapshot = RenderSnapshot {
             instances: vec![RenderInstance {

@@ -1,5 +1,6 @@
 use super::*;
 use qst_core::EntityId;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportedMesh {
@@ -8,6 +9,10 @@ pub struct ImportedMesh {
     pub normals: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
     pub color: [f32; 4],
+    #[serde(default)]
+    pub metallic: f32,
+    #[serde(default = "default_roughness")]
+    pub roughness: f32,
     #[serde(default)]
     pub uvs: Vec<[f32; 2]>,
     #[serde(default)]
@@ -21,15 +26,25 @@ pub struct ImportedMesh {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportedTexture {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GltfImport {
     pub scene: SceneAsset,
     pub meshes: Vec<ImportedMesh>,
+    #[serde(default)]
+    pub textures: Vec<ImportedTexture>,
     #[serde(default)]
     pub animations: Vec<AnimationClip>,
 }
 
 pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
-    let (document, buffers, _) =
+    let (document, buffers, images) =
         ::gltf::import(path.as_ref()).map_err(|error| EngineError::Runtime(error.to_string()))?;
     let mut result = GltfImport {
         scene: SceneAsset::new(
@@ -39,14 +54,35 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
                 .unwrap_or("gltf"),
         ),
         meshes: Vec::new(),
+        textures: Vec::new(),
         animations: Vec::new(),
     };
+    for image in document.images() {
+        let Some(data) = images.get(image.index()) else {
+            continue;
+        };
+        let rgba8 = image_to_rgba8(data)?;
+        result.textures.push(ImportedTexture {
+            name: texture_name(image.index()),
+            width: data.width,
+            height: data.height,
+            rgba8,
+        });
+    }
+    let mut node_entities = HashMap::new();
     if let Some(source_scene) = document
         .default_scene()
         .or_else(|| document.scenes().next())
     {
         for node in source_scene.nodes() {
-            append_node(&mut result, &buffers, &node, Mat4::IDENTITY, None)?;
+            append_node(
+                &mut result,
+                &buffers,
+                &node,
+                Mat4::IDENTITY,
+                None,
+                &mut node_entities,
+            )?;
         }
     }
     for animation in document.animations() {
@@ -94,10 +130,36 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
                     _ => AnimationInterpolation::Linear,
                 },
             });
-            channels.push(AnimationChannel { property, sampler });
+            let target = node_entities
+                .get(&channel.target().node().index())
+                .copied()
+                .unwrap_or_default();
+            channels.push(AnimationChannel {
+                target,
+                property,
+                sampler,
+            });
+        }
+        let name = animation.name().unwrap_or("Animation").to_owned();
+        for channel in &channels {
+            if channel.target.is_valid()
+                && let Some(entity) = result
+                    .scene
+                    .entities
+                    .iter_mut()
+                    .find(|entity| entity.id == channel.target)
+            {
+                entity
+                    .animation_player
+                    .get_or_insert_with(|| AnimationPlayer {
+                        clip: Some(name.clone()),
+                        playing: true,
+                        ..AnimationPlayer::default()
+                    });
+            }
         }
         result.animations.push(AnimationClip {
-            name: animation.name().unwrap_or("Animation").into(),
+            name,
             duration,
             samplers,
             channels,
@@ -106,8 +168,8 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
     Ok(result)
 }
 
-const IMPORTER_VERSION: u32 = 1;
-const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF1";
+const IMPORTER_VERSION: u32 = 2;
+const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF2";
 
 #[derive(Serialize, Deserialize)]
 struct CacheEnvelope {
@@ -171,7 +233,7 @@ fn gltf_dependency_hashes(path: &Path) -> Vec<[u8; 32]> {
     let Ok(document) = ::gltf::Gltf::open(path) else {
         return Vec::new();
     };
-    document
+    let mut hashes = document
         .document
         .buffers()
         .filter_map(|buffer| match buffer.source() {
@@ -183,7 +245,22 @@ fn gltf_dependency_hashes(path: &Path) -> Vec<[u8; 32]> {
             }
             _ => None,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    hashes.extend(
+        document
+            .document
+            .images()
+            .filter_map(|image| match image.source() {
+                ::gltf::image::Source::Uri { uri, .. } if !uri.starts_with("data:") => {
+                    let dependency = path.parent().unwrap_or_else(|| Path::new(".")).join(uri);
+                    std::fs::read(dependency)
+                        .ok()
+                        .map(|bytes| *blake3::hash(&bytes).as_bytes())
+                }
+                _ => None,
+            }),
+    );
+    hashes
 }
 
 fn append_node(
@@ -192,6 +269,7 @@ fn append_node(
     node: &::gltf::Node<'_>,
     parent_transform: Mat4,
     parent_index: Option<usize>,
+    node_entities: &mut HashMap<usize, EntityId>,
 ) -> EngineResult<()> {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent_transform * local;
@@ -218,6 +296,7 @@ fn append_node(
     }
     let node_index = result.scene.entities.len();
     result.scene.entities.push(entity);
+    node_entities.insert(node.index(), EntityId::new(node_index as u64 + 1));
     if let Some(mesh) = node.mesh() {
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
             if primitive.mode() != ::gltf::mesh::Mode::Triangles {
@@ -263,36 +342,25 @@ fn append_node(
                 .base_color_factor();
             let material = primitive.material();
             let pbr = material.pbr_metallic_roughness();
-            let base_color_texture = pbr.base_color_texture().map(|texture| {
-                texture
-                    .texture()
-                    .source()
-                    .name()
-                    .unwrap_or("texture")
-                    .to_owned()
-            });
-            let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|texture| {
-                texture
-                    .texture()
-                    .source()
-                    .name()
-                    .unwrap_or("texture")
-                    .to_owned()
-            });
-            let normal_texture = material.normal_texture().map(|texture| {
-                texture
-                    .texture()
-                    .source()
-                    .name()
-                    .unwrap_or("texture")
-                    .to_owned()
-            });
+            let metallic = pbr.metallic_factor();
+            let roughness = pbr.roughness_factor();
+            let base_color_texture = pbr
+                .base_color_texture()
+                .map(|texture| texture_name(texture.texture().source().index()));
+            let metallic_roughness_texture = pbr
+                .metallic_roughness_texture()
+                .map(|texture| texture_name(texture.texture().source().index()));
+            let normal_texture = material
+                .normal_texture()
+                .map(|texture| texture_name(texture.texture().source().index()));
             result.meshes.push(ImportedMesh {
                 name: name.clone(),
                 positions,
                 normals,
                 indices,
                 color,
+                metallic,
+                roughness,
                 uvs,
                 tangents,
                 base_color_texture,
@@ -321,7 +389,62 @@ fn append_node(
         }
     }
     for child in node.children() {
-        append_node(result, buffers, &child, world, Some(node_index))?;
+        append_node(
+            result,
+            buffers,
+            &child,
+            world,
+            Some(node_index),
+            node_entities,
+        )?;
     }
     Ok(())
+}
+
+fn default_roughness() -> f32 {
+    0.5
+}
+
+fn texture_name(index: usize) -> String {
+    format!("gltf_texture_{index}")
+}
+
+fn image_to_rgba8(data: &::gltf::image::Data) -> EngineResult<Vec<u8>> {
+    use ::gltf::image::Format;
+    let channels = match data.format {
+        Format::R8 | Format::R16 => 1,
+        Format::R8G8 | Format::R16G16 => 2,
+        Format::R8G8B8 | Format::R16G16B16 | Format::R32G32B32FLOAT => 3,
+        Format::R8G8B8A8 | Format::R16G16B16A16 | Format::R32G32B32A32FLOAT => 4,
+    };
+    if matches!(data.format, Format::R8G8B8A8) {
+        return Ok(data.pixels.clone());
+    }
+    if !matches!(
+        data.format,
+        Format::R8 | Format::R8G8 | Format::R8G8B8 | Format::R8G8B8A8
+    ) {
+        return Err(EngineError::Unsupported(format!(
+            "glTF texture format {:?} is not supported; use 8-bit images",
+            data.format
+        )));
+    }
+    let expected = data.width as usize * data.height as usize * channels;
+    if data.pixels.len() != expected {
+        return Err(EngineError::Runtime(
+            "invalid glTF image byte length".into(),
+        ));
+    }
+    let mut rgba = Vec::with_capacity(data.width as usize * data.height as usize * 4);
+    for pixel in data.pixels.chunks_exact(channels) {
+        rgba.extend_from_slice(pixel);
+        match channels {
+            1 => rgba.extend_from_slice(&[0, 0, 255]),
+            2 => rgba.extend_from_slice(&[0, 255]),
+            3 => rgba.push(255),
+            4 => {}
+            _ => unreachable!(),
+        }
+    }
+    Ok(rgba)
 }

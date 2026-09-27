@@ -14,12 +14,21 @@ pub enum GizmoMode {
     Scale,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum EditorCommand {
+    Create,
+    Delete(EntityId),
+    Duplicate(EntityId),
+    Reparent(EntityId, Option<EntityId>),
+}
+
 pub struct EditorPlugin {
     pub play_state: PlayState,
     pub selected_entity: Option<EntityId>,
     pub step_requested: bool,
     pub save_requested: bool,
     pub gizmo_mode: GizmoMode,
+    pub pending_command: Option<EditorCommand>,
 }
 
 impl Default for EditorPlugin {
@@ -30,6 +39,7 @@ impl Default for EditorPlugin {
             step_requested: false,
             save_requested: false,
             gizmo_mode: GizmoMode::Translate,
+            pending_command: None,
         }
     }
 }
@@ -79,6 +89,7 @@ impl EditorPlugin {
         diagnostics: &FrameDiagnostics,
     ) -> Option<EntityId> {
         let mut changed = None;
+        let mut requested_parent = None;
         let order = scene
             .hierarchy_order()
             .unwrap_or_else(|_| (0..scene.entities.len()).collect());
@@ -109,6 +120,26 @@ impl EditorPlugin {
             .resizable(true)
             .show(context, |ui| {
                 ui.heading("Inspector");
+                let parent_options = self.selected_entity.and_then(|selected| {
+                    let index = scene.index_of(selected)?;
+                    let entity = &scene.entities[index];
+                    let label = entity
+                        .parent
+                        .and_then(|parent| scene.index_of(parent))
+                        .and_then(|parent| scene.entities.get(parent))
+                        .map(|parent| parent.name.clone())
+                        .unwrap_or_else(|| "Root".into());
+                    let options = scene
+                        .entities
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.id != selected
+                                && !is_descendant(scene, candidate.id, selected)
+                        })
+                        .map(|candidate| (candidate.id, candidate.name.clone()))
+                        .collect::<Vec<_>>();
+                    Some((selected, entity.parent, label, options))
+                });
                 if let Some((index, entity)) = self
                     .selected_entity
                     .and_then(|id| scene.index_of(id))
@@ -163,6 +194,24 @@ impl EditorPlugin {
                             "Live position {:.2}, {:.2}, {:.2}",
                             position[0], position[1], position[2]
                         ));
+                    }
+                    if let Some((selected, parent, label, options)) = &parent_options {
+                        egui::ComboBox::from_id_salt("quasar-parent")
+                            .selected_text(label)
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_label(parent.is_none(), "Root").clicked() {
+                                    requested_parent = Some(None);
+                                }
+                                for (candidate, name) in options {
+                                    if ui
+                                        .selectable_label(*parent == Some(*candidate), name)
+                                        .clicked()
+                                    {
+                                        requested_parent = Some(Some(*candidate));
+                                    }
+                                }
+                            });
+                        let _ = selected;
                     }
                     if let Some(camera) = &mut entity.camera {
                         edited |= ui
@@ -229,6 +278,17 @@ impl EditorPlugin {
             });
         egui::TopBottomPanel::top("quasar-controls").show(context, |ui| {
             ui.horizontal(|ui| {
+                if ui.button("Create").clicked() {
+                    self.pending_command = Some(EditorCommand::Create);
+                }
+                if let Some(id) = self.selected_entity {
+                    if ui.button("Duplicate").clicked() {
+                        self.pending_command = Some(EditorCommand::Duplicate(id));
+                    }
+                    if ui.button("Delete").clicked() {
+                        self.pending_command = Some(EditorCommand::Delete(id));
+                    }
+                }
                 if ui
                     .button(if self.play_state == PlayState::Playing {
                         "Pause"
@@ -257,6 +317,22 @@ impl EditorPlugin {
                 }
             });
         });
+        if let (Some(id), Some(parent)) = (self.selected_entity, requested_parent) {
+            self.pending_command = Some(EditorCommand::Reparent(id, parent));
+        }
         changed
     }
+}
+
+fn is_descendant(scene: &SceneAsset, candidate: EntityId, ancestor: EntityId) -> bool {
+    let mut current = Some(candidate);
+    while let Some(id) = current {
+        if id == ancestor {
+            return true;
+        }
+        current = scene
+            .index_of(id)
+            .and_then(|index| scene.entities[index].parent);
+    }
+    false
 }

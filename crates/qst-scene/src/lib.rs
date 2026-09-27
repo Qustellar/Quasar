@@ -7,7 +7,7 @@ use std::path::Path;
 
 mod gltf;
 mod scene;
-pub use gltf::{GltfImport, ImportedMesh, import_gltf, import_gltf_cached};
+pub use gltf::{GltfImport, ImportedMesh, ImportedTexture, import_gltf, import_gltf_cached};
 pub use qst_core::EntityId;
 pub use scene::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,

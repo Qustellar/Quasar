@@ -16,6 +16,21 @@ pub struct MeshVertex {
     pub normal: [f32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct MeshVertexPbr {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub tangent: [f32; 4],
+    pub uv: [f32; 2],
+}
+
+#[derive(Clone, Debug)]
+pub struct TexturedMeshAsset {
+    pub vertices: Vec<MeshVertexPbr>,
+    pub indices: Vec<u32>,
+}
+
 #[derive(Clone, Debug)]
 pub struct MeshAsset {
     pub vertices: Vec<MeshVertex>,
@@ -61,14 +76,26 @@ impl Default for SamplerAsset {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialAsset {
     pub color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+    pub base_color_texture: Option<Handle<TextureAsset>>,
+    pub metallic_roughness_texture: Option<Handle<TextureAsset>>,
+    pub normal_texture: Option<Handle<TextureAsset>>,
 }
 
 impl MaterialAsset {
     pub const fn from_color(color: [f32; 4]) -> Self {
-        Self { color }
+        Self {
+            color,
+            metallic: 0.0,
+            roughness: 0.5,
+            base_color_texture: None,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+        }
     }
     pub const fn base_color(&self) -> [f32; 4] {
         self.color
@@ -89,6 +116,32 @@ pub struct PbrMaterial {
     pub base_color_texture: Option<Handle<TextureAsset>>,
     pub metallic_roughness_texture: Option<Handle<TextureAsset>>,
     pub normal_texture: Option<Handle<TextureAsset>>,
+}
+
+impl PbrMaterial {
+    pub const fn from_color(color: [f32; 4]) -> Self {
+        Self {
+            base_color: color,
+            metallic: 0.0,
+            roughness: 0.5,
+            base_color_texture: None,
+            metallic_roughness_texture: None,
+            normal_texture: None,
+        }
+    }
+}
+
+impl From<MaterialAsset> for PbrMaterial {
+    fn from(material: MaterialAsset) -> Self {
+        Self {
+            base_color: material.color,
+            metallic: material.metallic,
+            roughness: material.roughness,
+            base_color_texture: material.base_color_texture,
+            metallic_roughness_texture: material.metallic_roughness_texture,
+            normal_texture: material.normal_texture,
+        }
+    }
 }
 
 impl Default for PbrMaterial {

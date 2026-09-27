@@ -157,6 +157,8 @@ impl AnimationSampler {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AnimationChannel {
+    #[serde(default)]
+    pub target: EntityId,
     pub property: AnimationProperty,
     pub sampler: usize,
 }
@@ -558,9 +560,47 @@ impl SceneAsset {
         let index = self
             .index_of(id)
             .ok_or_else(|| EngineError::AssetNotFound(format!("entity {}", id.0)))?;
+        let order = self.hierarchy_order()?;
+        let mut worlds = vec![Mat4::IDENTITY; self.entities.len()];
+        for &current in &order {
+            let local = transform_matrix(self.entities[current].local_transform);
+            worlds[current] = self.entities[current]
+                .parent
+                .and_then(|ancestor| self.index_of(ancestor))
+                .map(|ancestor| worlds[ancestor] * local)
+                .unwrap_or(local);
+        }
+        let old_world = worlds[index];
         self.entities[index].parent = parent;
+        let parent_world = parent
+            .and_then(|ancestor| self.index_of(ancestor))
+            .map(|ancestor| worlds[ancestor])
+            .unwrap_or(Mat4::IDENTITY);
+        let local = parent_world.inverse() * old_world;
+        if !local.is_finite() {
+            return Err(EngineError::Unsupported(
+                "parent transform is singular".into(),
+            ));
+        }
+        let (scale, rotation, translation) = local.to_scale_rotation_translation();
+        let transform = TransformState {
+            translation,
+            rotation,
+            scale,
+        };
+        if !translation.is_finite() || !rotation.is_finite() || !scale.is_finite() {
+            return Err(EngineError::Unsupported(
+                "reparent produced a non-finite transform".into(),
+            ));
+        }
+        self.entities[index].local_transform = transform;
+        self.entities[index].transform = transform;
         Ok(())
     }
+}
+
+fn transform_matrix(state: TransformState) -> Mat4 {
+    Mat4::from_scale_rotation_translation(state.scale, state.rotation, state.translation)
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -20,8 +20,8 @@ pub use qst_ecs::{
 };
 pub use qst_input::{ButtonState, GamepadInput, InputState, KeyboardState, MouseState};
 pub use qst_render::{
-    MaterialAsset, MeshAsset, MeshVertex, PbrMaterial, RenderFeature, RenderGraph, RenderNode,
-    RenderSnapshot, RenderStats, SamplerAsset, TextureAsset,
+    MaterialAsset, MeshAsset, MeshVertex, MeshVertexPbr, PbrMaterial, RenderFeature, RenderGraph,
+    RenderNode, RenderSnapshot, RenderStats, SamplerAsset, TextureAsset, TexturedMeshAsset,
 };
 pub use qst_scene::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
@@ -37,9 +37,10 @@ pub mod prelude {
         AudioPlaybackState, AudioPlayer, BoxCollider, ButtonState, Camera, DirectionalLight,
         EngineApp, EngineError, EngineResult, EntityId, FixedTime, FrameDiagnostics, GamepadInput,
         Handle, InputState, KeyboardState, LocalTransform, MaterialAsset, MeshAsset, MeshRenderer,
-        MouseState, NullAudioBackend, Parent, PbrMaterial, Plugin, PreviousWorldTransform,
-        RenderFeature, RenderGraph, RenderNode, RenderSnapshot, RenderStats, SamplerAsset,
-        SceneAsset, SceneEntity, TextureAsset, Transform, WorldTransform,
+        MeshVertexPbr, MouseState, NullAudioBackend, Parent, PbrMaterial, Plugin,
+        PreviousWorldTransform, RenderFeature, RenderGraph, RenderNode, RenderSnapshot,
+        RenderStats, SamplerAsset, SceneAsset, SceneEntity, TextureAsset, TexturedMeshAsset,
+        Transform, WorldTransform,
     };
     #[cfg(feature = "editor")]
     pub use crate::{EditorPlugin, GizmoMode};
@@ -58,7 +59,33 @@ pub use qst_physics::PhysicsCollision;
 use qst_physics::{PhysicsConfig, PhysicsWorld};
 use qst_render::{RenderCamera, RenderInstance, RenderLight, Renderer};
 use qst_scene::import_gltf_cached;
-use qst_scene::{GltfImport, ImportedMesh};
+use qst_scene::{GltfImport, ImportedMesh, ImportedTexture};
+
+#[derive(Default)]
+struct EngineAudioBackend {
+    #[cfg(feature = "audio")]
+    backend: qst_audio::RodioAudioBackend,
+    #[cfg(not(feature = "audio"))]
+    backend: qst_audio::NullAudioBackend,
+}
+
+impl qst_audio::AudioBackend for EngineAudioBackend {
+    fn play(
+        &mut self,
+        clip: Handle<AudioClip>,
+        data: &AudioClip,
+        volume: f32,
+        looping: bool,
+    ) -> EngineResult<()> {
+        self.backend.play(clip, data, volume, looping)
+    }
+    fn pause(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
+        self.backend.pause(clip)
+    }
+    fn stop(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
+        self.backend.stop(clip)
+    }
+}
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -130,16 +157,20 @@ pub struct EngineApp {
     mesh_assets: AssetStorage<MeshAsset>,
     material_assets: AssetStorage<MaterialAsset>,
     texture_assets: AssetStorage<TextureAsset>,
+    audio_assets: AssetStorage<AudioClip>,
     mesh_names: HashMap<String, Handle<MeshAsset>>,
     material_names: HashMap<String, Handle<MaterialAsset>>,
     texture_names: HashMap<String, Handle<TextureAsset>>,
     animation_clips: HashMap<String, AnimationClip>,
+    audio_names: HashMap<String, Handle<AudioClip>>,
+    audio_player: AudioPlayer<EngineAudioBackend>,
     scene_entities: Vec<Entity>,
     hierarchy_order: Vec<usize>,
     scene_index_by_id: HashMap<EntityId, usize>,
     last_scene_transforms: Vec<TransformState>,
     authored_transforms: Vec<TransformState>,
     gltf_mesh_names: Vec<String>,
+    gltf_texture_names: Vec<String>,
     gltf_path: Option<PathBuf>,
     scene_path: Option<PathBuf>,
     saved_scene_contents: Option<(PathBuf, Vec<u8>)>,
@@ -192,16 +223,20 @@ impl EngineApp {
             mesh_assets: AssetStorage::default(),
             material_assets: AssetStorage::default(),
             texture_assets: AssetStorage::default(),
+            audio_assets: AssetStorage::default(),
             mesh_names: HashMap::new(),
             material_names: HashMap::new(),
             texture_names: HashMap::new(),
             animation_clips: HashMap::new(),
+            audio_names: HashMap::new(),
+            audio_player: AudioPlayer::default(),
             scene_entities: Vec::new(),
             hierarchy_order: Vec::new(),
             scene_index_by_id: HashMap::new(),
             last_scene_transforms: Vec::new(),
             authored_transforms: Vec::new(),
             gltf_mesh_names: Vec::new(),
+            gltf_texture_names: Vec::new(),
             gltf_path: None,
             scene_path: None,
             saved_scene_contents: None,
@@ -307,6 +342,33 @@ impl EngineApp {
     pub fn register_animation_clip(&mut self, clip: AnimationClip) -> &mut Self {
         self.animation_clips.insert(clip.name.clone(), clip);
         self
+    }
+
+    pub fn register_audio(
+        &mut self,
+        name: impl Into<String>,
+        clip: AudioClip,
+    ) -> Handle<AudioClip> {
+        let name = name.into();
+        if let Some(old) = self.audio_names.remove(&name) {
+            self.audio_assets.remove(old);
+        }
+        let handle = self.assets.load::<AudioClip>(&name);
+        self.audio_assets.insert(handle, clip.clone());
+        self.audio_player.register_clip(handle, clip);
+        let _ = self.assets.mark_loaded(handle);
+        self.audio_names.insert(name, handle);
+        handle
+    }
+
+    pub fn play_audio(&mut self, source: qst_audio::AudioSource) -> EngineResult<()> {
+        self.audio_player.play(source)
+    }
+    pub fn pause_audio(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
+        self.audio_player.pause(clip)
+    }
+    pub fn stop_audio(&mut self, clip: Handle<AudioClip>) -> EngineResult<()> {
+        self.audio_player.stop(clip)
     }
 }
 

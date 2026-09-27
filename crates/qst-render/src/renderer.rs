@@ -78,8 +78,25 @@ impl Renderer {
         self.forward.upload_mesh(&self.device, handle, mesh);
     }
 
+    pub fn upload_textured_mesh(&mut self, handle: Handle<MeshAsset>, mesh: &TexturedMeshAsset) {
+        self.forward
+            .upload_textured_mesh(&self.device, handle, mesh);
+    }
+
+    pub fn upload_texture(&mut self, handle: Handle<TextureAsset>, texture: &TextureAsset) {
+        self.forward
+            .upload_texture(&self.device, &self.queue, handle, texture);
+    }
+
     pub fn upload_material(&mut self, handle: Handle<MaterialAsset>, material: MaterialAsset) {
         self.forward.upload_material(handle, material);
+        self.forward
+            .upload_pbr_material(&self.device, handle, material.into());
+    }
+
+    pub fn upload_pbr_material(&mut self, handle: Handle<MaterialAsset>, material: PbrMaterial) {
+        self.forward
+            .upload_pbr_material(&self.device, handle, material);
     }
 
     pub fn gpu_resource_count(&self) -> usize {
@@ -96,6 +113,10 @@ impl Renderer {
 
     pub fn remove_material(&mut self, handle: Handle<MaterialAsset>) {
         self.forward.remove_material(handle);
+    }
+
+    pub fn remove_texture(&mut self, handle: Handle<TextureAsset>) {
+        self.forward.remove_texture(handle);
     }
 
     pub fn render(&mut self, snapshot: &RenderSnapshot) -> EngineResult<()> {

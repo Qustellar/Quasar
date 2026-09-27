@@ -72,7 +72,7 @@ impl EngineApp {
                             continue;
                         }
                         self.clear_gltf_assets();
-                        self.register_gltf_assets(imported.meshes);
+                        self.register_gltf_assets(imported.meshes, imported.textures);
                     } else {
                         let mut imported = imported;
                         imported.scene.source_gltf = Some(path.clone());

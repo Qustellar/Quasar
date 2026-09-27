@@ -51,11 +51,11 @@ fn fixed_parent_motion_reaches_physics_body_and_grandchild() {
     app.update_fixed(std::time::Duration::from_millis(17));
     let body = app.world.get::<Transform>(app.scene_entities[1]).unwrap();
     let child = app.world.get::<Transform>(app.scene_entities[2]).unwrap();
-    assert!((body.current.translation.x - 4.0).abs() < 1e-4);
-    assert!((child.current.translation.x - 5.0).abs() < 1e-4);
-    assert!(child.current.translation.y < 3.0);
-    assert_eq!(body.previous.translation.x, 3.0);
-    assert_eq!(child.previous.translation.x, 4.0);
+    assert!((body.current.translation.x - 5.0).abs() < 1e-4);
+    assert!((child.current.translation.x - 9.0).abs() < 1e-4);
+    assert!(child.current.translation.y > 5.0);
+    assert_eq!(body.previous.translation.x, 4.0);
+    assert_eq!(child.previous.translation.x, 8.0);
 }
 
 #[test]
@@ -71,8 +71,8 @@ fn fixed_parent_rotation_moves_descendants_and_rotates_physics_body() {
     let body = app.world.get::<Transform>(app.scene_entities[1]).unwrap();
     let child = app.world.get::<Transform>(app.scene_entities[2]).unwrap();
     assert!((body.current.translation.x - 1.0).abs() < 1e-4);
-    assert!((body.current.translation.z + 2.0).abs() < 1e-4);
-    assert!((child.current.translation.z + 3.0).abs() < 1e-4);
+    assert!((body.current.translation.z + 3.0).abs() < 1e-4);
+    assert!((child.current.translation.z + 7.0).abs() < 1e-4);
     assert!(
         (body
             .current
@@ -128,7 +128,7 @@ fn editor_parent_rotation_updates_camera_and_light_snapshot() {
     assert!((camera.transform.translation.x - 3.0).abs() < 1e-4);
     assert!(camera.transform.translation.z.abs() < 1e-4);
     assert!((snapshot.lights[0].direction[0] + 1.0).abs() < 1e-4);
-    assert!((app.scene.entities[1].transform.translation.x - 3.0).abs() < 1e-4);
+    assert!((app.scene.entities[1].transform.translation.z - 3.0).abs() < 1e-4);
 }
 
 #[cfg(feature = "editor")]
@@ -138,8 +138,8 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
     app.set_scene(hierarchy_scene()).unwrap();
     app.scene.entities[0].transform.translation.x += 2.0;
     app.apply_editor_change(EntityId::new(1));
-    assert_eq!(app.scene.entities[1].transform.translation.x, 5.0);
-    assert_eq!(app.scene.entities[2].transform.translation.x, 6.0);
+    assert_eq!(app.scene.entities[1].transform.translation.x, 3.0);
+    assert_eq!(app.scene.entities[2].transform.translation.x, 4.0);
     assert_eq!(
         app.world
             .get::<Transform>(app.scene_entities[1])
@@ -147,17 +147,14 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
             .current
             .translation
             .x,
-        5.0
+        6.0
     );
     app.scene.entities[0].transform.scale = glam::Vec3::splat(2.0);
     app.apply_editor_change(EntityId::new(1));
-    assert_eq!(
-        app.scene.entities[1].transform.scale,
-        glam::Vec3::splat(2.0)
-    );
+    assert_eq!(app.scene.entities[1].transform.scale, glam::Vec3::ONE);
     assert_eq!(
         app.scene.entities[1].collider.unwrap().half_extents,
-        [1.0; 3]
+        [0.5; 3]
     );
     assert_eq!(
         app.world
@@ -166,7 +163,13 @@ fn editor_parent_move_updates_saved_children_without_resetting_other_edits() {
             .half_extents,
         [1.0; 3]
     );
-    let scaled_start_y = app.scene.entities[1].transform.translation.y;
+    let scaled_start_y = app
+        .world
+        .get::<Transform>(app.scene_entities[1])
+        .unwrap()
+        .current
+        .translation
+        .y;
     for _ in 0..30 {
         app.update_fixed(std::time::Duration::from_millis(17));
     }

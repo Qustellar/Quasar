@@ -3,13 +3,16 @@ use super::*;
 impl EngineApp {
     pub fn update_animations(&mut self, delta_seconds: f32) {
         let clips = self.animation_clips.clone();
-        let mut query = self.world.query::<(
-            &mut AnimationPlayer,
-            &mut LocalTransform,
-            &mut Transform,
-            Option<&mut WorldTransform>,
-        )>();
-        for (mut player, mut local, mut legacy, mut world) in query.iter_mut(&mut self.world) {
+        let entity_ids = self
+            .scene_entities
+            .iter()
+            .enumerate()
+            .map(|(index, &entity)| (entity, self.scene.entities[index].id))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut query = self
+            .world
+            .query::<(Entity, &mut AnimationPlayer, &mut LocalTransform)>();
+        for (entity, mut player, mut local) in query.iter_mut(&mut self.world) {
             if !player.playing {
                 continue;
             }
@@ -30,7 +33,17 @@ impl EngineApp {
                 }
             }
             let mut state = local.0;
-            for (property, value) in clip.sample(player.time) {
+            for channel in &clip.channels {
+                if channel.target.is_valid()
+                    && entity_ids.get(&entity).copied() != Some(channel.target)
+                {
+                    continue;
+                }
+                let Some(sampler) = clip.samplers.get(channel.sampler) else {
+                    continue;
+                };
+                let value = sampler.sample(player.time);
+                let property = &channel.property;
                 match property {
                     AnimationProperty::Translation => {
                         state.translation = glam::Vec3::from_array([value[0], value[1], value[2]])
@@ -47,11 +60,6 @@ impl EngineApp {
                 }
             }
             local.0 = state;
-            legacy.previous = legacy.current;
-            legacy.current = state;
-            if let Some(world) = world.as_deref_mut() {
-                world.0 = state;
-            }
         }
         self.diagnostics.animation_update_seconds = delta_seconds;
     }
@@ -146,6 +154,7 @@ impl EngineApp {
             self.propagate_scene_hierarchy(false);
             self.physics_schedule.run(&mut self.world);
             self.physics.step(&mut self.world);
+            self.sync_dynamic_physics_locals();
             self.propagate_scene_hierarchy(false);
             self.post_update_schedule.run(&mut self.world);
             let mut step = self.world.resource_mut::<SimulationStep>();
@@ -190,7 +199,6 @@ impl EngineApp {
             }
             self.physics.set_entity_pose(entity, source_transform);
             self.propagate_scene_hierarchy(true);
-            self.move_authored_descendants(index, previous_authored, source_transform);
         }
         if let Some(camera) = camera
             && let Some(mut current) = self.world.get_mut::<Camera>(entity)

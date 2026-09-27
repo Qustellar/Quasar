@@ -51,6 +51,11 @@ impl ApplicationHandler for EngineApp {
                                 renderer.upload_material(handle, *material);
                             }
                         }
+                        for &handle in self.texture_names.values() {
+                            if let Some(texture) = self.texture_assets.get(handle) {
+                                renderer.upload_texture(handle, &texture);
+                            }
+                        }
                         #[cfg(feature = "editor")]
                         {
                             self.editor = Some(EditorRuntime::new(
@@ -108,7 +113,7 @@ impl ApplicationHandler for EngineApp {
                 self.poll_asset_reloads();
                 let input_start = Instant::now();
                 if let Some(mut input) = self.world.get_resource_mut::<InputState>() {
-                    input.clear_transient();
+                    input.begin_frame();
                 }
                 self.pre_update_schedule.run(&mut self.world);
                 self.diagnostics.input_update_seconds = input_start.elapsed().as_secs_f32();
@@ -132,6 +137,7 @@ impl ApplicationHandler for EngineApp {
                 if !paused {
                     self.update_animations(delta.as_secs_f32());
                     self.variable_schedule.run(&mut self.world);
+                    self.propagate_scene_hierarchy(false);
                     self.update_fixed(delta);
                 } else if step_once {
                     self.update_fixed(std::time::Duration::from_secs_f32(
@@ -160,6 +166,27 @@ impl ApplicationHandler for EngineApp {
                     self.apply_editor_change(entity_id);
                 }
                 #[cfg(feature = "editor")]
+                if let Some(editor) = &mut self.editor
+                    && let Some(command) = editor.plugin.pending_command.take()
+                {
+                    let result = match command {
+                        qst_editor::EditorCommand::Create => {
+                            self.create_entity("Entity").map(|_| ())
+                        }
+                        qst_editor::EditorCommand::Delete(id) => self.delete_entity(id).map(|_| ()),
+                        qst_editor::EditorCommand::Duplicate(id) => {
+                            self.duplicate_entity(id).map(|_| ())
+                        }
+                        qst_editor::EditorCommand::Reparent(id, parent) => {
+                            self.reparent_entity(id, parent).map(|_| ())
+                        }
+                    };
+                    if let Err(error) = result {
+                        self.diagnostics.last_reload =
+                            Some(format!("Editor command failed: {error}"));
+                    }
+                }
+                #[cfg(feature = "editor")]
                 if self
                     .editor
                     .as_mut()
@@ -176,8 +203,8 @@ impl ApplicationHandler for EngineApp {
                         self.diagnostics.last_reload = Some("Scene saved".into());
                     }
                 }
-                let snapshot = self.render_snapshot();
                 self.render_extract_schedule.run(&mut self.world);
+                let snapshot = self.render_snapshot();
                 self.render_schedule.run(&mut self.world);
                 let start = Instant::now();
                 let _render_span = tracing::info_span!("render").entered();
