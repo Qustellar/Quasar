@@ -6,6 +6,8 @@ pub struct Renderer {
     pub surface: Surface<'static>,
     pub config: SurfaceConfiguration,
     pub features: Vec<Box<dyn RenderFeature>>,
+    pub render_graph: RenderGraph,
+    compiled_graph: CompiledRenderGraph,
     depth_view: wgpu::TextureView,
     forward: ForwardFeature,
 }
@@ -51,6 +53,8 @@ impl Renderer {
         );
         let depth_view = depth_view(&device, config.width, config.height);
         let forward = ForwardFeature::new(&device, format, [config.width, config.height]);
+        let render_graph = RenderGraph::default_forward();
+        let compiled_graph = render_graph.compile()?;
         tracing::info!("forward pipeline ready");
         Ok(Self {
             device,
@@ -58,6 +62,8 @@ impl Renderer {
             surface,
             config,
             features: Vec::new(),
+            render_graph,
+            compiled_graph,
             depth_view,
             forward,
         })
@@ -105,6 +111,19 @@ impl Renderer {
 
     pub fn render_stats(&self) -> RenderStats {
         self.forward.stats()
+    }
+
+    pub fn render_path(&self) -> RenderPath {
+        self.forward.stats().path
+    }
+
+    pub fn compiled_render_graph(&self) -> &CompiledRenderGraph {
+        &self.compiled_graph
+    }
+
+    pub fn rebuild_render_graph(&mut self) -> EngineResult<()> {
+        self.compiled_graph = self.render_graph.compile()?;
+        Ok(())
     }
 
     pub fn remove_mesh(&mut self, handle: Handle<MeshAsset>) {
@@ -185,9 +204,14 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.forward.render(&mut pass);
-            for feature in &self.features {
-                feature.render(&mut pass);
+            for node in &self.compiled_graph.order {
+                let _node_span = tracing::debug_span!("render_graph_pass", pass = %node).entered();
+                if node == "forward" {
+                    self.forward.render(&mut pass);
+                    for feature in &self.features {
+                        feature.render(&mut pass);
+                    }
+                }
             }
         }
         overlay(&self.device, &self.queue, &mut encoder, &view)?;

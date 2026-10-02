@@ -18,11 +18,25 @@ pub struct ImportedMesh {
     #[serde(default)]
     pub tangents: Vec<[f32; 4]>,
     #[serde(default)]
+    pub joints: Vec<[u16; 4]>,
+    #[serde(default)]
+    pub weights: Vec<[f32; 4]>,
+    #[serde(default)]
     pub base_color_texture: Option<String>,
     #[serde(default)]
     pub metallic_roughness_texture: Option<String>,
     #[serde(default)]
     pub normal_texture: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportedSkin {
+    pub name: String,
+    pub joints: Vec<usize>,
+    #[serde(default)]
+    pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+    #[serde(default)]
+    pub skeleton: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +51,8 @@ pub struct ImportedTexture {
 pub struct GltfImport {
     pub scene: SceneAsset,
     pub meshes: Vec<ImportedMesh>,
+    #[serde(default)]
+    pub skins: Vec<ImportedSkin>,
     #[serde(default)]
     pub textures: Vec<ImportedTexture>,
     #[serde(default)]
@@ -54,9 +70,30 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
                 .unwrap_or("gltf"),
         ),
         meshes: Vec::new(),
+        skins: Vec::new(),
         textures: Vec::new(),
         animations: Vec::new(),
     };
+    for skin in document.skins() {
+        let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
+        let inverse_bind_matrices = reader
+            .read_inverse_bind_matrices()
+            .map(|matrices| {
+                matrices
+                    .map(|matrix| Mat4::from_cols_array_2d(&matrix).to_cols_array_2d())
+                    .collect()
+            })
+            .unwrap_or_default();
+        result.skins.push(ImportedSkin {
+            name: skin
+                .name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("gltf_skin_{}", skin.index())),
+            joints: skin.joints().map(|joint| joint.index()).collect(),
+            inverse_bind_matrices,
+            skeleton: skin.skeleton().map(|node| node.index()),
+        });
+    }
     for image in document.images() {
         let Some(data) = images.get(image.index()) else {
             continue;
@@ -168,7 +205,7 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
     Ok(result)
 }
 
-const IMPORTER_VERSION: u32 = 2;
+const IMPORTER_VERSION: u32 = 3;
 const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF2";
 
 #[derive(Serialize, Deserialize)]
@@ -273,7 +310,7 @@ fn append_node(
 ) -> EngineResult<()> {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent_transform * local;
-    let (scale, rotation, translation) = world.to_scale_rotation_translation();
+    let (scale, rotation, translation) = local.to_scale_rotation_translation();
     let mut entity = SceneEntity {
         id: EntityId::new(result.scene.entities.len() as u64 + 1),
         name: node.name().unwrap_or("Node").into(),
@@ -285,6 +322,18 @@ fn append_node(
         },
         ..SceneEntity::default()
     };
+    if let Some(skin) = node.skin() {
+        entity.skin = Some(SkinBinding {
+            skeleton: skin
+                .skeleton()
+                .map(|skeleton| format!("node:{}", skeleton.index())),
+            skin: Some(
+                skin.name()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("gltf_skin_{}", skin.index())),
+            ),
+        });
+    }
     if let Some(camera) = node.camera()
         && let ::gltf::camera::Projection::Perspective(p) = camera.projection()
     {
@@ -331,6 +380,14 @@ fn append_node(
                 .read_tangents()
                 .map(|values| values.collect())
                 .unwrap_or_default();
+            let joints = reader
+                .read_joints(0)
+                .map(|values| values.into_u16().collect())
+                .unwrap_or_default();
+            let weights = reader
+                .read_weights(0)
+                .map(|values| values.into_f32().collect())
+                .unwrap_or_default();
             let indices: Vec<u32> = reader
                 .read_indices()
                 .map(|indices| indices.into_u32().collect())
@@ -363,6 +420,8 @@ fn append_node(
                 roughness,
                 uvs,
                 tangents,
+                joints,
+                weights,
                 base_color_texture,
                 metallic_roughness_texture,
                 normal_texture,
@@ -375,11 +434,8 @@ fn append_node(
                     primitive_index
                 ),
                 parent: Some(EntityId::new(node_index as u64 + 1)),
-                transform: TransformState {
-                    translation,
-                    rotation,
-                    scale,
-                },
+                transform: TransformState::identity(),
+                local_transform: TransformState::identity(),
                 mesh: Some(MeshRenderer {
                     mesh: name.clone(),
                     material: name,

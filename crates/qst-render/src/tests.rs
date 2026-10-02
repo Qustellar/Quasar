@@ -2,17 +2,52 @@ use super::*;
 
 #[test]
 fn snapshot_groups_instances_by_mesh_and_material() {
-    let mut snapshot = RenderSnapshot::default();
-    for entity in 0..1024 {
-        snapshot.instances.push(RenderInstance {
-            entity,
-            transform: TransformState::identity(),
-            mesh: Handle::new(AssetId::new((entity % 4) as u32, 0)),
-            material: Handle::new(AssetId::new((entity % 4) as u32, 0)),
-        });
+    for count in [1024_usize, 10_000_usize] {
+        let mut snapshot = RenderSnapshot::default();
+        for entity in 0..count {
+            snapshot.instances.push(RenderInstance {
+                entity: entity as u64,
+                transform: TransformState::identity(),
+                bounds: [0.0, 0.0, 0.0, 1.0],
+                mesh: Handle::new(AssetId::new((entity % 4) as u32, 0)),
+                material: Handle::new(AssetId::new((entity % 4) as u32, 0)),
+            });
+        }
+        assert_eq!(snapshot.instances.len(), count);
+        assert_eq!(snapshot.batch_count(), 4);
     }
-    assert_eq!(snapshot.instances.len(), 1024);
-    assert_eq!(snapshot.batch_count(), 4);
+}
+
+#[test]
+fn sphere_culling_keeps_camera_facing_instances_and_rejects_far_instances() {
+    let camera = Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 10.0);
+    let visible = TransformState {
+        translation: Vec3::new(0.0, 0.0, -2.0),
+        ..TransformState::identity()
+    };
+    let outside = TransformState {
+        translation: Vec3::new(100.0, 0.0, -2.0),
+        ..TransformState::identity()
+    };
+    assert!(sphere_visible(camera, visible, [0.0, 0.0, 0.0, 0.5]));
+    assert!(!sphere_visible(camera, outside, [0.0, 0.0, 0.0, 0.5]));
+}
+
+#[test]
+fn cpu_skinning_blends_joint_matrices() {
+    let vertices = [SkinnedVertex {
+        position: [0.0, 0.0, 0.0],
+        joints: [0, 1, 0, 0],
+        weights: [0.5, 0.5, 0.0, 0.0],
+    }];
+    let result = skin_vertices(
+        &vertices,
+        &[
+            Mat4::from_translation(Vec3::X),
+            Mat4::from_translation(Vec3::Y),
+        ],
+    );
+    assert_eq!(result[0], [0.5, 0.5, 0.0]);
 }
 
 #[test]
@@ -79,6 +114,7 @@ fn forward_feature_draws_nonblank_pixels() {
             instances: vec![RenderInstance {
                 entity: 1,
                 transform: TransformState::identity(),
+                bounds: [0.0, 0.0, 0.0, 1.0],
                 mesh: mesh_handle,
                 material: material_handle,
             }],

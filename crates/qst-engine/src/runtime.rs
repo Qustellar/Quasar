@@ -46,14 +46,14 @@ impl ApplicationHandler for EngineApp {
                         }) {
                             renderer.upload_mesh(handle, &mesh);
                         }
-                        for &handle in self.material_names.values() {
-                            if let Some(material) = self.material_assets.get(handle) {
-                                renderer.upload_material(handle, *material);
-                            }
-                        }
                         for &handle in self.texture_names.values() {
                             if let Some(texture) = self.texture_assets.get(handle) {
                                 renderer.upload_texture(handle, &texture);
+                            }
+                        }
+                        for &handle in self.material_names.values() {
+                            if let Some(material) = self.material_assets.get(handle) {
+                                renderer.upload_material(handle, *material);
                             }
                         }
                         #[cfg(feature = "editor")]
@@ -236,6 +236,11 @@ impl ApplicationHandler for EngineApp {
                     self.diagnostics.instance_upload_bytes = stats.instance_upload_bytes;
                     self.diagnostics.render_fallback = stats.fallback;
                     self.diagnostics.skipped_instances = stats.skipped_instances;
+                    self.diagnostics.visible_instances =
+                        stats.instances.saturating_sub(stats.culled_instances);
+                    self.diagnostics.culled_instances = stats.culled_instances;
+                    self.diagnostics.indirect_draw_calls = stats.indirect_draws;
+                    self.diagnostics.render_path = format!("{:?}", stats.path);
                 }
                 self.diagnostics.loaded_asset_count = self.assets.records().count();
                 self.diagnostics.render_seconds = start.elapsed().as_secs_f32();

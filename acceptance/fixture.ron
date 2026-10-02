@@ -1,9 +1,11 @@
 (
-    schema_version: 3,
-    name: "quasar-0.0.2-foundation",
-    source_gltf: None,
+    schema_version: 4,
+    name: "quasar-0.0.3-foundation",
+    source_gltf: Some("../assets/playground.gltf"),
     entities: [
-        (id: 1, name: "Root", parent: None, local_transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: None, light: None, collider: None, audio_source: None, animation_player: None),
-        (id: 2, name: "Child", parent: Some(1), local_transform: (translation: (0.0, 1.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 1.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: None, light: None, collider: None, audio_source: None, animation_player: None),
+        (id: 1, name: "Cube", parent: None, local_transform: (translation: (0.0, 3.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 3.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: Some((mesh: "gltf_mesh_0_0", material: "gltf_mesh_0_0")), camera: None, light: None, collider: Some((half_extents: (0.5, 0.5, 0.5), dynamic: true)), audio_source: None, animation_player: None, render_bounds: Some((center: (0.0, 0.0, 0.0), radius: 1.0)), skin: None, audio_listener: None),
+        (id: 2, name: "Floor", parent: None, local_transform: (translation: (0.0, -0.5, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (12.0, 1.0, 12.0)), transform: (translation: (0.0, -0.5, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (12.0, 1.0, 12.0)), mesh: Some((mesh: "gltf_mesh_1_0", material: "gltf_mesh_1_0")), camera: None, light: None, collider: Some((half_extents: (6.0, 0.5, 6.0), dynamic: false)), audio_source: None, animation_player: None, render_bounds: Some((center: (0.0, 0.0, 0.0), radius: 1.0)), skin: None, audio_listener: None),
+        (id: 3, name: "Camera", parent: None, local_transform: (translation: (0.0, 3.0, 10.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 3.0, 10.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: Some((fov_y_radians: 1.0471976, near: 0.1, far: 100.0)), light: None, collider: None, audio_source: None, animation_player: None, render_bounds: None, skin: None, audio_listener: Some((active: true))),
+        (id: 4, name: "Sun", parent: None, local_transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), transform: (translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0), scale: (1.0, 1.0, 1.0)), mesh: None, camera: None, light: Some((direction: (0.0, -1.0, 0.0), color: (1.0, 1.0, 1.0), intensity: 1.0)), collider: None, audio_source: None, animation_player: None, render_bounds: None, skin: None, audio_listener: None),
     ],
 )

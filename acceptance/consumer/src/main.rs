@@ -16,9 +16,10 @@ fn falling_box_height(app: &mut EngineApp) -> f32 {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/playground.ron");
+    let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture.ron");
     let mut app = EngineApp::new();
     app.load_scene(scene_path)?;
+    assert_eq!(app.scene.schema_version, 4);
 
     let initial = app.render_snapshot();
     assert_eq!(initial.instances.len(), 2);

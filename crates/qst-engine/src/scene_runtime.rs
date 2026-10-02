@@ -317,6 +317,12 @@ impl EngineApp {
                         .copied()
                         .unwrap_or([1.0, 0.0, 0.0, 1.0]),
                     uv: mesh.uvs.get(index).copied().unwrap_or([0.0, 0.0]),
+                    joints: mesh.joints.get(index).copied().unwrap_or([0; 4]),
+                    weights: mesh
+                        .weights
+                        .get(index)
+                        .copied()
+                        .unwrap_or([1.0, 0.0, 0.0, 0.0]),
                 })
                 .collect::<Vec<_>>();
             let vertices = mesh

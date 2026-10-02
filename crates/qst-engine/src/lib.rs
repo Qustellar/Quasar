@@ -20,27 +20,30 @@ pub use qst_ecs::{
 };
 pub use qst_input::{ButtonState, GamepadInput, InputState, KeyboardState, MouseState};
 pub use qst_render::{
-    MaterialAsset, MeshAsset, MeshVertex, MeshVertexPbr, PbrMaterial, RenderFeature, RenderGraph,
-    RenderNode, RenderSnapshot, RenderStats, SamplerAsset, TextureAsset, TexturedMeshAsset,
+    IndirectDrawIndexedArgs, MaterialAsset, MeshAsset, MeshVertex, MeshVertexPbr, PbrMaterial,
+    RenderFeature, RenderGraph, RenderNode, RenderPath, RenderSnapshot, RenderStats, SamplerAsset,
+    TextureAsset, TexturedMeshAsset,
 };
 pub use qst_scene::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
-    AnimationSampler, AudioSource, BoxCollider, Camera, DirectionalLight, LocalTransform,
-    MeshRenderer, Parent, PreviousWorldTransform, SceneAsset, SceneEntity, Transform,
-    WorldTransform,
+    AnimationSampler, AssetDependency, AudioListener, AudioSource, BoxCollider, Camera,
+    DirectionalLight, EditorMetadata, ImportedSkin, LocalTransform, MeshRenderer, Parent,
+    PrefabReference, PreviousWorldTransform, RenderBounds, SceneAsset, SceneEntity, SkinBinding,
+    Transform, WorldTransform,
 };
 
 pub mod prelude {
     pub use crate::{
         AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer,
-        AnimationProperty, AnimationSampler, AudioBackend, AudioClip, AudioFormat,
-        AudioPlaybackState, AudioPlayer, BoxCollider, ButtonState, Camera, DirectionalLight,
-        EngineApp, EngineError, EngineResult, EntityId, FixedTime, FrameDiagnostics, GamepadInput,
-        Handle, InputState, KeyboardState, LocalTransform, MaterialAsset, MeshAsset, MeshRenderer,
-        MeshVertexPbr, MouseState, NullAudioBackend, Parent, PbrMaterial, Plugin,
-        PreviousWorldTransform, RenderFeature, RenderGraph, RenderNode, RenderSnapshot,
-        RenderStats, SamplerAsset, SceneAsset, SceneEntity, TextureAsset, TexturedMeshAsset,
-        Transform, WorldTransform,
+        AnimationProperty, AnimationSampler, AssetDependency, AudioBackend, AudioClip, AudioFormat,
+        AudioListener, AudioPlaybackState, AudioPlayer, BoxCollider, ButtonState, Camera,
+        DirectionalLight, EditorMetadata, EngineApp, EngineError, EngineResult, EntityId,
+        FixedTime, FrameDiagnostics, GamepadInput, Handle, ImportedSkin, InputState, KeyboardState,
+        LocalTransform, MaterialAsset, MeshAsset, MeshRenderer, MeshVertexPbr, MouseState,
+        NullAudioBackend, Parent, PbrMaterial, Plugin, PrefabReference, PreviousWorldTransform,
+        RenderBounds, RenderFeature, RenderGraph, RenderNode, RenderPath, RenderSnapshot,
+        RenderStats, SamplerAsset, SceneAsset, SceneEntity, SkinBinding, TextureAsset,
+        TexturedMeshAsset, Transform, WorldTransform,
     };
     #[cfg(feature = "editor")]
     pub use crate::{EditorPlugin, GizmoMode};

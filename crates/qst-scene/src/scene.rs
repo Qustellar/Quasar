@@ -2,7 +2,8 @@ use super::*;
 
 pub const LEGACY_SCENE_SCHEMA_VERSION: u32 = 1;
 pub const SCHEMA_2: u32 = 2;
-pub const SCENE_SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_3: u32 = 3;
+pub const SCENE_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Transform {
@@ -27,6 +28,50 @@ pub struct PreviousWorldTransform(pub TransformState);
 
 #[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Parent(pub EntityId);
+
+#[derive(Component, Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RenderBounds {
+    pub center: [f32; 3],
+    pub radius: f32,
+}
+
+impl Default for RenderBounds {
+    fn default() -> Self {
+        Self {
+            center: [0.0; 3],
+            radius: 1.0,
+        }
+    }
+}
+
+#[derive(Component, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkinBinding {
+    pub skeleton: Option<String>,
+    pub skin: Option<String>,
+}
+
+#[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AudioListener {
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrefabReference {
+    pub asset: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditorMetadata {
+    pub locked: bool,
+    pub hidden: bool,
+    pub color: Option<[u8; 4]>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssetDependency {
+    pub path: String,
+    pub hash: String,
+}
 
 impl Default for Transform {
     fn default() -> Self {
@@ -217,7 +262,7 @@ pub struct SceneEntity {
     pub parent: Option<EntityId>,
     #[serde(default)]
     pub local_transform: TransformState,
-    /// Compatibility mirror for schema 1/2 callers. Schema 3 writes local_transform.
+    /// Compatibility mirror for schema 1/2/3 callers. Schema 4 writes local_transform.
     #[serde(default)]
     pub transform: TransformState,
     pub mesh: Option<MeshRenderer>,
@@ -228,6 +273,18 @@ pub struct SceneEntity {
     pub audio_source: Option<AudioSource>,
     #[serde(default)]
     pub animation_player: Option<AnimationPlayer>,
+    #[serde(default)]
+    pub render_bounds: Option<RenderBounds>,
+    #[serde(default)]
+    pub skin: Option<SkinBinding>,
+    #[serde(default)]
+    pub audio_listener: Option<AudioListener>,
+    #[serde(default)]
+    pub prefab: Option<PrefabReference>,
+    #[serde(default)]
+    pub editor: EditorMetadata,
+    #[serde(default)]
+    pub dependencies: Vec<AssetDependency>,
 }
 
 impl Default for SceneEntity {
@@ -244,6 +301,12 @@ impl Default for SceneEntity {
             collider: None,
             audio_source: None,
             animation_player: None,
+            render_bounds: None,
+            skin: None,
+            audio_listener: None,
+            prefab: None,
+            editor: EditorMetadata::default(),
+            dependencies: Vec::new(),
         }
     }
 }
@@ -336,6 +399,15 @@ impl SceneAsset {
                 if let Some(animation) = entity.animation_player.clone() {
                     commands.insert(animation);
                 }
+                if let Some(bounds) = entity.render_bounds {
+                    commands.insert(bounds);
+                }
+                if let Some(skin) = entity.skin.clone() {
+                    commands.insert(skin);
+                }
+                if let Some(listener) = entity.audio_listener {
+                    commands.insert(listener);
+                }
                 commands.id()
             })
             .collect()
@@ -405,6 +477,7 @@ impl SceneAsset {
                 self.schema_version
             )));
         }
+        self.validate_ids()?;
         self.hierarchy_order()?;
         if self.entities.iter().any(|entity| {
             !entity.local_transform.translation.is_finite()
@@ -451,19 +524,23 @@ impl SceneAsset {
                 };
             }
             scene.schema_version = SCENE_SCHEMA_VERSION;
-            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 3");
+            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 4");
         } else if scene.schema_version == SCHEMA_2 {
             for entity in &mut scene.entities {
                 entity.local_transform = entity.transform;
             }
             scene.schema_version = SCENE_SCHEMA_VERSION;
-            tracing::info!(scene = %scene.name, "migrated scene schema 2 to schema 3");
+            tracing::info!(scene = %scene.name, "migrated scene schema 2 to schema 4");
+        } else if scene.schema_version == SCHEMA_3 {
+            tracing::info!(scene = %scene.name, "migrated scene schema 3 to schema 4");
+            scene.schema_version = SCENE_SCHEMA_VERSION;
         } else if scene.schema_version != SCENE_SCHEMA_VERSION {
             return Err(EngineError::Unsupported(format!(
                 "scene schema {}",
                 scene.schema_version
             )));
         }
+        scene.validate_ids()?;
         scene.hierarchy_order()?;
         for entity in &mut scene.entities {
             if !entity.local_transform.translation.is_finite()
@@ -472,6 +549,16 @@ impl SceneAsset {
             {
                 return Err(EngineError::Unsupported(format!(
                     "entity {} has non-finite transform",
+                    entity.id.0
+                )));
+            }
+            if let Some(bounds) = entity.render_bounds
+                && (!bounds.center.iter().all(|value| value.is_finite())
+                    || !bounds.radius.is_finite()
+                    || bounds.radius < 0.0)
+            {
+                return Err(EngineError::Unsupported(format!(
+                    "entity {} has invalid render bounds",
                     entity.id.0
                 )));
             }

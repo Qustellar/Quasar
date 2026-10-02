@@ -82,6 +82,55 @@ fn unsupported_scene_schema_is_rejected() {
 }
 
 #[test]
+fn schema_three_is_migrated_and_schema_four_fields_default() {
+    let path = std::env::temp_dir().join(format!("quasar-schema3-{}.ron", std::process::id()));
+    let mut scene = SceneAsset::new("schema3");
+    scene.schema_version = SCHEMA_3;
+    let id = scene.create_entity("Root");
+    scene.entities[0].render_bounds = Some(RenderBounds {
+        center: [0.0, 0.0, 0.0],
+        radius: 2.0,
+    });
+    assert_eq!(id, EntityId::new(1));
+    std::fs::write(&path, ron::to_string(&scene).unwrap()).unwrap();
+    let loaded = SceneAsset::load_ron(&path).unwrap();
+    assert_eq!(loaded.schema_version, SCENE_SCHEMA_VERSION);
+    assert_eq!(loaded.entities[0].render_bounds.unwrap().radius, 2.0);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn scene_rejects_invalid_bounds_and_duplicate_ids() {
+    let path =
+        std::env::temp_dir().join(format!("quasar-invalid-scene-{}.ron", std::process::id()));
+    let mut invalid_bounds = SceneAsset::new("invalid-bounds");
+    invalid_bounds.push_entity(SceneEntity {
+        render_bounds: Some(RenderBounds {
+            center: [f32::NAN, 0.0, 0.0],
+            radius: 1.0,
+        }),
+        ..SceneEntity::default()
+    });
+    std::fs::write(&path, ron::to_string(&invalid_bounds).unwrap()).unwrap();
+    assert!(SceneAsset::load_ron(&path).is_err());
+
+    let mut duplicate = SceneAsset::new("duplicate");
+    duplicate.entities = vec![
+        SceneEntity {
+            id: EntityId::new(1),
+            ..SceneEntity::default()
+        },
+        SceneEntity {
+            id: EntityId::new(1),
+            ..SceneEntity::default()
+        },
+    ];
+    std::fs::write(&path, ron::to_string(&duplicate).unwrap()).unwrap();
+    assert!(SceneAsset::load_ron(&path).is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn gltf_import_reads_static_primitive() {
     use base64::Engine;
     let mut bytes = Vec::new();

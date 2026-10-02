@@ -87,6 +87,18 @@ impl EngineApp {
                     (Some(previous), Some(world)) => previous.0.lerp(world.0, alpha),
                     _ => transform.interpolated(alpha),
                 },
+                bounds: self
+                    .world
+                    .get::<RenderBounds>(entity)
+                    .map(|bounds| {
+                        [
+                            bounds.center[0],
+                            bounds.center[1],
+                            bounds.center[2],
+                            bounds.radius,
+                        ]
+                    })
+                    .unwrap_or([0.0, 0.0, 0.0, 1.0]),
                 mesh: mesh_handle,
                 material: material_handle,
             });

@@ -21,6 +21,7 @@ struct InstanceData {
 struct MaterialUniform {
     base_color: [f32; 4],
     metallic_roughness: [f32; 4],
+    texture_flags: [f32; 4],
 }
 
 struct GpuMaterial {
@@ -43,6 +44,7 @@ struct GpuBatch {
     mesh: AssetId<MeshAsset>,
     material: AssetId<MaterialAsset>,
     buffer: wgpu::Buffer,
+    indirect: wgpu::Buffer,
     capacity: usize,
     count: u32,
 }
@@ -66,6 +68,7 @@ pub struct ForwardFeature {
         Vec<InstanceData>,
     )>,
     instances: Vec<RenderInstance>,
+    visible_instances: Vec<RenderInstance>,
     camera: Option<RenderCamera>,
     light: Option<RenderLight>,
     viewport: [u32; 2],
@@ -80,6 +83,14 @@ pub struct RenderStats {
     pub instance_upload_bytes: u64,
     pub skipped_instances: usize,
     pub fallback: bool,
+    pub culled_instances: usize,
+    pub indirect_draws: usize,
+    pub path: RenderPath,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuCullingConfig {
+    pub enabled: bool,
 }
 
 impl ForwardFeature {
@@ -129,6 +140,26 @@ impl ForwardFeature {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let default_texture_gpu = device.create_texture(&wgpu::TextureDescriptor {
@@ -155,6 +186,7 @@ impl ForwardFeature {
             contents: bytemuck::bytes_of(&MaterialUniform {
                 base_color: [1.0; 4],
                 metallic_roughness: [0.0, 0.5, 0.0, 0.0],
+                texture_flags: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -174,6 +206,14 @@ impl ForwardFeature {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&default_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&default_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&default_texture.view),
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -181,7 +221,14 @@ impl ForwardFeature {
             bind_group_layouts: &[&globals_layout, &material_layout],
             push_constant_ranges: &[],
         });
-        let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x2];
+        let attributes = wgpu::vertex_attr_array![
+            0 => Float32x3,
+            1 => Float32x3,
+            2 => Float32x4,
+            3 => Float32x2,
+            4 => Uint16x4,
+            5 => Float32x4
+        ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("forward-pipeline"),
             layout: Some(&pipeline_layout),
@@ -191,7 +238,7 @@ impl ForwardFeature {
                 compilation_options: Default::default(),
                 buffers: &[
                     wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<MeshVertex>() as u64,
+                        array_stride: std::mem::size_of::<MeshVertexPbr>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attributes,
                     },
@@ -199,11 +246,11 @@ impl ForwardFeature {
                         array_stride: std::mem::size_of::<InstanceData>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![
-                            4 => Float32x4,
-                            5 => Float32x4,
                             6 => Float32x4,
                             7 => Float32x4,
                             8 => Float32x4,
+                            9 => Float32x4,
+                            10 => Float32x4,
                         ],
                     },
                 ],
@@ -248,6 +295,7 @@ impl ForwardFeature {
             batches: Vec::new(),
             scratch_groups: Vec::new(),
             instances: Vec::new(),
+            visible_instances: Vec::new(),
             camera: None,
             light: None,
             viewport,
@@ -272,6 +320,8 @@ impl ForwardFeature {
                 normal: vertex.normal,
                 tangent: [1.0, 0.0, 0.0, 1.0],
                 uv: [0.0, 0.0],
+                joints: [0; 4],
+                weights: [1.0, 0.0, 0.0, 0.0],
             })
             .collect::<Vec<_>>();
         let vertex = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -400,11 +450,12 @@ impl ForwardFeature {
     ) {
         let uniform = MaterialUniform {
             base_color: material.base_color,
-            metallic_roughness: [
-                material.metallic,
-                material.roughness,
-                0.0,
+            metallic_roughness: [material.metallic, material.roughness, 0.0, 0.0],
+            texture_flags: [
                 material.base_color_texture.is_some() as u32 as f32,
+                material.metallic_roughness_texture.is_some() as u32 as f32,
+                material.normal_texture.is_some() as u32 as f32,
+                0.0,
             ],
         };
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -433,6 +484,26 @@ impl ForwardFeature {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.default_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(
+                        material
+                            .metallic_roughness_texture
+                            .and_then(|texture| self.textures.get(&texture.id))
+                            .map(|texture| &texture.view)
+                            .unwrap_or(&self.default_texture.view),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(
+                        material
+                            .normal_texture
+                            .and_then(|texture| self.textures.get(&texture.id))
+                            .map(|texture| &texture.view)
+                            .unwrap_or(&self.default_texture.view),
+                    ),
                 },
             ],
         });
@@ -494,14 +565,24 @@ impl RenderFeature for ForwardFeature {
             camera.near.max(0.001),
             camera.far.max(camera.near + 1.0),
         );
+        let view_projection = projection * transform_matrix(camera.transform).inverse();
+        self.visible_instances.clear();
+        let mut skipped_instances = 0usize;
+        self.visible_instances
+            .extend(self.instances.iter().copied().filter(|instance| {
+                if !self.meshes.contains_key(&instance.mesh.id) {
+                    skipped_instances += 1;
+                    return false;
+                }
+                sphere_visible(view_projection, instance.transform, instance.bounds)
+            }));
         let light = self.light.unwrap_or(RenderLight {
             direction: [-0.4, -1.0, -0.5],
             color: [1.0; 3],
             intensity: 1.0,
         });
         let globals = Globals {
-            view_projection: (projection * transform_matrix(camera.transform).inverse())
-                .to_cols_array_2d(),
+            view_projection: view_projection.to_cols_array_2d(),
             light_direction: [
                 light.direction[0],
                 light.direction[1],
@@ -517,35 +598,36 @@ impl RenderFeature for ForwardFeature {
             ambient: [0.2, 0.22, 0.25, 0.0],
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        self.scratch_groups.clear();
-        for instance in &self.instances {
-            let key = (instance.mesh.id, instance.material.id);
-            if let Some((mesh, material, values)) = self.scratch_groups.last_mut()
-                && (*mesh, *material) == key
-            {
-                values.push(InstanceData {
-                    model: transform_matrix(instance.transform).to_cols_array_2d(),
-                    color: self
-                        .materials
-                        .get(&instance.material.id)
-                        .map(|m| m.color)
-                        .unwrap_or([0.8; 4]),
-                });
-            } else {
-                self.scratch_groups.push((
-                    key.0,
-                    key.1,
-                    vec![InstanceData {
-                        model: transform_matrix(instance.transform).to_cols_array_2d(),
-                        color: self
-                            .materials
-                            .get(&instance.material.id)
-                            .map(|m| m.color)
-                            .unwrap_or([0.8; 4]),
-                    }],
-                ));
-            }
+        for (_, _, values) in &mut self.scratch_groups {
+            values.clear();
         }
+        let mut group_count = 0usize;
+        for instance in &self.visible_instances {
+            let key = (instance.mesh.id, instance.material.id);
+            let needs_new_group = self
+                .scratch_groups
+                .get(group_count)
+                .is_none_or(|(mesh, material, _)| (*mesh, *material) != key);
+            if needs_new_group {
+                if let Some(group) = self.scratch_groups.get_mut(group_count) {
+                    group.0 = key.0;
+                    group.1 = key.1;
+                } else {
+                    self.scratch_groups.push((key.0, key.1, Vec::new()));
+                }
+                group_count += 1;
+            }
+            let values = &mut self.scratch_groups[group_count - 1].2;
+            values.push(InstanceData {
+                model: transform_matrix(instance.transform).to_cols_array_2d(),
+                color: self
+                    .materials
+                    .get(&instance.material.id)
+                    .map(|m| m.color)
+                    .unwrap_or([0.8; 4]),
+            });
+        }
+        self.scratch_groups.truncate(group_count);
         self.batches.truncate(self.scratch_groups.len());
         for (index, (mesh, material, values)) in self.scratch_groups.iter().enumerate() {
             let required = values.len();
@@ -559,6 +641,12 @@ impl RenderFeature for ForwardFeature {
                         label: Some("instance-buffer"),
                         size: (std::mem::size_of::<InstanceData>() * required.max(1)) as u64,
                         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                    indirect: device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("indexed-indirect-args"),
+                        size: std::mem::size_of::<IndirectDrawIndexedArgs>() as u64,
+                        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     }),
                     capacity: required.max(1),
@@ -578,6 +666,21 @@ impl RenderFeature for ForwardFeature {
                 });
             }
             queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(values));
+            queue.write_buffer(
+                &batch.indirect,
+                0,
+                bytemuck::bytes_of(&IndirectDrawIndexedArgs {
+                    index_count: self
+                        .meshes
+                        .get(mesh)
+                        .map(|mesh| mesh.index_count)
+                        .unwrap_or(0),
+                    instance_count: required as u32,
+                    first_index: 0,
+                    base_vertex: 0,
+                    first_instance: 0,
+                }),
+            );
             batch.count = required as u32;
         }
         self.stats = RenderStats {
@@ -589,12 +692,14 @@ impl RenderFeature for ForwardFeature {
                 .iter()
                 .map(|(_, _, values)| (values.len() * std::mem::size_of::<InstanceData>()) as u64)
                 .sum(),
-            skipped_instances: self
-                .instances
-                .iter()
-                .filter(|instance| !self.meshes.contains_key(&instance.mesh.id))
-                .count(),
+            skipped_instances,
             fallback: false,
+            culled_instances: self
+                .instances
+                .len()
+                .saturating_sub(self.visible_instances.len()),
+            indirect_draws: self.scratch_groups.len(),
+            path: RenderPath::Indirect,
         };
         Ok(())
     }
@@ -625,7 +730,7 @@ impl RenderFeature for ForwardFeature {
                 .get(&batch.material)
                 .unwrap_or(&self.default_material);
             pass.set_bind_group(1, &material.bind_group, &[]);
-            pass.draw_indexed(0..mesh.index_count, 0, 0..batch.count);
+            pass.draw_indexed_indirect(&batch.indirect, 0);
         }
     }
 }

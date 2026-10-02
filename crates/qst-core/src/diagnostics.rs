@@ -59,4 +59,16 @@ pub struct FrameDiagnostics {
     pub asset_dependency_count: u64,
     #[serde(default)]
     pub asset_rebuild_count: u64,
+    #[serde(default)]
+    pub visible_instances: usize,
+    #[serde(default)]
+    pub culled_instances: usize,
+    #[serde(default)]
+    pub indirect_draw_calls: usize,
+    #[serde(default)]
+    pub gpu_cull_seconds: f32,
+    #[serde(default)]
+    pub skinning_seconds: f32,
+    #[serde(default)]
+    pub render_path: String,
 }
