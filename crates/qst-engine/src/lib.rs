@@ -66,9 +66,9 @@ use qst_scene::{GltfImport, ImportedMesh, ImportedTexture};
 
 #[derive(Default)]
 struct EngineAudioBackend {
-    #[cfg(feature = "audio")]
+    #[cfg(all(feature = "audio", not(test)))]
     backend: qst_audio::RodioAudioBackend,
-    #[cfg(not(feature = "audio"))]
+    #[cfg(any(not(feature = "audio"), test))]
     backend: qst_audio::NullAudioBackend,
 }
 
