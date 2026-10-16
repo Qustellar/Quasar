@@ -15,8 +15,9 @@ pub use scene::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
     AnimationSampler, AssetDependency, AudioListener, AudioSource, BoxCollider, Camera,
     DirectionalLight, EditorMetadata, LEGACY_SCENE_SCHEMA_VERSION, LocalTransform, MeshRenderer,
-    Parent, PrefabReference, PreviousWorldTransform, RenderBounds, SCENE_SCHEMA_VERSION, SCHEMA_2,
-    SCHEMA_3, SceneAsset, SceneEntity, SceneHandle, SkinBinding, Transform, WorldTransform,
+    Parent, PrefabReference, PreviousWorldTransform, RenderBounds, SCENE_SCHEMA_4,
+    SCENE_SCHEMA_VERSION, SCHEMA_2, SCHEMA_3, SCHEMA_4, SceneAsset, SceneEntity, SceneHandle,
+    SceneSkin, SkinBinding, Transform, WorldTransform,
 };
 #[cfg(test)]
 mod tests;

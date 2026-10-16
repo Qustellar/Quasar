@@ -21,15 +21,16 @@ pub use qst_ecs::{
 pub use qst_input::{ButtonState, GamepadInput, InputState, KeyboardState, MouseState};
 pub use qst_render::{
     IndirectDrawIndexedArgs, MaterialAsset, MeshAsset, MeshVertex, MeshVertexPbr, PbrMaterial,
-    RenderFeature, RenderGraph, RenderNode, RenderPath, RenderSnapshot, RenderStats, SamplerAsset,
+    RenderCapabilities, RenderExecution, RenderFeature, RenderGraph, RenderInstance, RenderNode,
+    RenderPath, RenderPreference, RenderSkin, RenderSnapshot, RenderStats, SamplerAsset,
     TextureAsset, TexturedMeshAsset,
 };
 pub use qst_scene::{
     AnimationChannel, AnimationClip, AnimationInterpolation, AnimationPlayer, AnimationProperty,
     AnimationSampler, AssetDependency, AudioListener, AudioSource, BoxCollider, Camera,
     DirectionalLight, EditorMetadata, ImportedSkin, LocalTransform, MeshRenderer, Parent,
-    PrefabReference, PreviousWorldTransform, RenderBounds, SceneAsset, SceneEntity, SkinBinding,
-    Transform, WorldTransform,
+    PrefabReference, PreviousWorldTransform, RenderBounds, SceneAsset, SceneEntity, SceneSkin,
+    SkinBinding, Transform, WorldTransform,
 };
 
 pub mod prelude {
@@ -41,8 +42,9 @@ pub mod prelude {
         FixedTime, FrameDiagnostics, GamepadInput, Handle, ImportedSkin, InputState, KeyboardState,
         LocalTransform, MaterialAsset, MeshAsset, MeshRenderer, MeshVertexPbr, MouseState,
         NullAudioBackend, Parent, PbrMaterial, Plugin, PrefabReference, PreviousWorldTransform,
-        RenderBounds, RenderFeature, RenderGraph, RenderNode, RenderPath, RenderSnapshot,
-        RenderStats, SamplerAsset, SceneAsset, SceneEntity, SkinBinding, TextureAsset,
+        RenderBounds, RenderCapabilities, RenderExecution, RenderFeature, RenderGraph,
+        RenderInstance, RenderNode, RenderPath, RenderPreference, RenderSkin, RenderSnapshot,
+        RenderStats, SamplerAsset, SceneAsset, SceneEntity, SceneSkin, SkinBinding, TextureAsset,
         TexturedMeshAsset, Transform, WorldTransform,
     };
     #[cfg(feature = "editor")]
@@ -60,7 +62,7 @@ pub use qst_editor::{EditorPlugin, GizmoMode};
 use qst_editor::{EditorRuntime, PlayState};
 pub use qst_physics::PhysicsCollision;
 use qst_physics::{PhysicsConfig, PhysicsWorld};
-use qst_render::{RenderCamera, RenderInstance, RenderLight, Renderer};
+use qst_render::{RenderCamera, RenderLight, Renderer};
 use qst_scene::import_gltf_cached;
 use qst_scene::{GltfImport, ImportedMesh, ImportedTexture};
 
@@ -160,6 +162,7 @@ pub struct EngineApp {
     mesh_assets: AssetStorage<MeshAsset>,
     material_assets: AssetStorage<MaterialAsset>,
     texture_assets: AssetStorage<TextureAsset>,
+    textured_meshes: HashMap<qst_core::AssetId<MeshAsset>, TexturedMeshAsset>,
     audio_assets: AssetStorage<AudioClip>,
     mesh_names: HashMap<String, Handle<MeshAsset>>,
     material_names: HashMap<String, Handle<MaterialAsset>>,
@@ -174,6 +177,7 @@ pub struct EngineApp {
     authored_transforms: Vec<TransformState>,
     gltf_mesh_names: Vec<String>,
     gltf_texture_names: Vec<String>,
+    gltf_animation_names: Vec<String>,
     gltf_path: Option<PathBuf>,
     scene_path: Option<PathBuf>,
     saved_scene_contents: Option<(PathBuf, Vec<u8>)>,
@@ -181,6 +185,7 @@ pub struct EngineApp {
     reload_rx: Receiver<ReloadResult>,
     reload_pending: bool,
     window_size: (u32, u32),
+    render_preference: RenderPreference,
     frame_index: u64,
     benchmark: Option<BenchmarkCapture>,
     physics: PhysicsWorld,
@@ -226,6 +231,7 @@ impl EngineApp {
             mesh_assets: AssetStorage::default(),
             material_assets: AssetStorage::default(),
             texture_assets: AssetStorage::default(),
+            textured_meshes: HashMap::new(),
             audio_assets: AssetStorage::default(),
             mesh_names: HashMap::new(),
             material_names: HashMap::new(),
@@ -240,6 +246,7 @@ impl EngineApp {
             authored_transforms: Vec::new(),
             gltf_mesh_names: Vec::new(),
             gltf_texture_names: Vec::new(),
+            gltf_animation_names: Vec::new(),
             gltf_path: None,
             scene_path: None,
             saved_scene_contents: None,
@@ -247,6 +254,7 @@ impl EngineApp {
             reload_rx,
             reload_pending: false,
             window_size: (1280, 720),
+            render_preference: RenderPreference::Auto,
             frame_index: 0,
             benchmark: None,
             physics: PhysicsWorld::new(PhysicsConfig::default()),
@@ -271,6 +279,11 @@ impl EngineApp {
         } else {
             self.pending_render_features.push(Box::new(feature));
         }
+        self
+    }
+
+    pub fn set_render_preference(&mut self, preference: RenderPreference) -> &mut Self {
+        self.render_preference = preference;
         self
     }
 

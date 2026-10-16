@@ -6,6 +6,7 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 
 struct Material {
     base_color: vec4<f32>,
@@ -31,6 +32,8 @@ struct VertexInput {
     @location(8) model_2: vec4<f32>,
     @location(9) model_3: vec4<f32>,
     @location(10) color: vec4<f32>,
+    @location(11) skin_base: u32,
+    @location(12) skin_count: u32,
 };
 
 struct VertexOutput {
@@ -45,9 +48,29 @@ struct VertexOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     let model = mat4x4<f32>(input.model_0, input.model_1, input.model_2, input.model_3);
-    output.position = globals.view_projection * model * vec4<f32>(input.position, 1.0);
-    output.normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
-    output.tangent = vec4<f32>(normalize((model * vec4<f32>(input.tangent.xyz, 0.0)).xyz), input.tangent.w);
+    var position = vec4<f32>(input.position, 1.0);
+    var normal = vec4<f32>(input.normal, 0.0);
+    var tangent = vec4<f32>(input.tangent.xyz, 0.0);
+    if (input.skin_base != 0xffffffffu) {
+        let joints = min(input.joints, vec4<u32>(input.skin_count - 1u));
+        let positive_weights = max(input.weights, vec4<f32>(0.0));
+        let total = dot(positive_weights, vec4<f32>(1.0));
+        let weights = positive_weights / max(total, 0.000001);
+        var skin = mat4x4<f32>(vec4<f32>(1.0,0.0,0.0,0.0), vec4<f32>(0.0,1.0,0.0,0.0),
+            vec4<f32>(0.0,0.0,1.0,0.0), vec4<f32>(0.0,0.0,0.0,1.0));
+        if (total > 0.000001) {
+            skin = joint_matrices[input.skin_base + joints.x] * weights.x
+                + joint_matrices[input.skin_base + joints.y] * weights.y
+                + joint_matrices[input.skin_base + joints.z] * weights.z
+                + joint_matrices[input.skin_base + joints.w] * weights.w;
+        }
+        position = skin * position;
+        normal = skin * normal;
+        tangent = skin * tangent;
+    }
+    output.position = globals.view_projection * model * position;
+    output.normal = normalize((model * normal).xyz);
+    output.tangent = vec4<f32>(normalize((model * tangent).xyz), input.tangent.w);
     output.color = input.color;
     output.uv = input.uv;
     return output;

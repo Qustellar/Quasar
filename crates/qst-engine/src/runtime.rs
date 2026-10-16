@@ -38,13 +38,20 @@ impl ApplicationHandler for EngineApp {
                     input.focused = true;
                 }
                 self.startup_schedule.run(&mut self.world);
-                match pollster::block_on(Renderer::new(window.clone())) {
+                match pollster::block_on(Renderer::new_with_preference(
+                    window.clone(),
+                    self.render_preference,
+                )) {
                     Ok(mut renderer) => {
                         renderer.features.append(&mut self.pending_render_features);
                         for (&handle, mesh) in self.mesh_names.values().filter_map(|handle| {
                             self.mesh_assets.get(*handle).map(|mesh| (handle, mesh))
                         }) {
-                            renderer.upload_mesh(handle, &mesh);
+                            if let Some(textured) = self.textured_meshes.get(&handle.id) {
+                                renderer.upload_textured_mesh(handle, textured);
+                            } else {
+                                renderer.upload_mesh(handle, &mesh);
+                            }
                         }
                         for &handle in self.texture_names.values() {
                             if let Some(texture) = self.texture_assets.get(handle) {
@@ -135,7 +142,6 @@ impl ApplicationHandler for EngineApp {
                 #[cfg(not(feature = "editor"))]
                 let step_once = false;
                 if !paused {
-                    self.update_animations(delta.as_secs_f32());
                     self.variable_schedule.run(&mut self.world);
                     self.propagate_scene_hierarchy(false);
                     self.update_fixed(delta);
@@ -236,10 +242,15 @@ impl ApplicationHandler for EngineApp {
                     self.diagnostics.instance_upload_bytes = stats.instance_upload_bytes;
                     self.diagnostics.render_fallback = stats.fallback;
                     self.diagnostics.skipped_instances = stats.skipped_instances;
-                    self.diagnostics.visible_instances =
-                        stats.instances.saturating_sub(stats.culled_instances);
+                    self.diagnostics.visible_instances = stats
+                        .instances
+                        .saturating_sub(stats.skipped_instances + stats.culled_instances);
                     self.diagnostics.culled_instances = stats.culled_instances;
                     self.diagnostics.indirect_draw_calls = stats.indirect_draws;
+                    self.diagnostics.gpu_cull_dispatches = stats.gpu_cull_dispatches;
+                    self.diagnostics.gpu_skinned_instances = stats.gpu_skinned_instances;
+                    self.diagnostics.skin_fallbacks = stats.skin_fallbacks;
+                    self.diagnostics.gpu_visibility_pending = stats.gpu_visibility_pending;
                     self.diagnostics.render_path = format!("{:?}", stats.path);
                 }
                 self.diagnostics.loaded_asset_count = self.assets.records().count();

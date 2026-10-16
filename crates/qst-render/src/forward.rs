@@ -14,6 +14,20 @@ struct Globals {
 struct InstanceData {
     model: [[f32; 4]; 4],
     color: [f32; 4],
+    skin_base: u32,
+    skin_count: u32,
+    _padding: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CullInstanceData {
+    model: [[f32; 4]; 4],
+    color: [f32; 4],
+    bounds: [f32; 4],
+    skin_base: u32,
+    skin_count: u32,
+    _padding: [u32; 2],
 }
 
 #[repr(C)]
@@ -49,10 +63,26 @@ struct GpuBatch {
     count: u32,
 }
 
+struct GpuDrivenBatch {
+    mesh: AssetId<MeshAsset>,
+    material: AssetId<MaterialAsset>,
+    input: wgpu::Buffer,
+    output: wgpu::Buffer,
+    counter: wgpu::Buffer,
+    indirect: wgpu::Buffer,
+    params: wgpu::Buffer,
+    count: u32,
+    cull_bind_group: wgpu::BindGroup,
+    finalize_bind_group: wgpu::BindGroup,
+    capacity: usize,
+}
+
 pub struct ForwardFeature {
     pipeline: wgpu::RenderPipeline,
     globals_buffer: wgpu::Buffer,
+    globals_layout: wgpu::BindGroupLayout,
     globals_bind_group: wgpu::BindGroup,
+    joint_buffer: wgpu::Buffer,
     material_layout: wgpu::BindGroupLayout,
     default_texture: GpuTexture,
     default_sampler: wgpu::Sampler,
@@ -62,17 +92,26 @@ pub struct ForwardFeature {
     materials: HashMap<AssetId<MaterialAsset>, MaterialAsset>,
     pbr_materials: HashMap<AssetId<MaterialAsset>, GpuMaterial>,
     batches: Vec<GpuBatch>,
+    gpu_batches: Vec<GpuDrivenBatch>,
     scratch_groups: Vec<(
         AssetId<MeshAsset>,
         AssetId<MaterialAsset>,
         Vec<InstanceData>,
     )>,
+    scratch_bounds: Vec<Vec<[f32; 4]>>,
     instances: Vec<RenderInstance>,
-    visible_instances: Vec<RenderInstance>,
+    skins: Vec<RenderSkin>,
+    snapshot_skin_fallbacks: usize,
     camera: Option<RenderCamera>,
     light: Option<RenderLight>,
     viewport: [u32; 2],
     stats: RenderStats,
+    preference: RenderPreference,
+    path: RenderPath,
+    cull_pipeline: Option<wgpu::ComputePipeline>,
+    finalize_pipeline: Option<wgpu::ComputePipeline>,
+    cull_layout: Option<wgpu::BindGroupLayout>,
+    finalize_layout: Option<wgpu::BindGroupLayout>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -86,6 +125,11 @@ pub struct RenderStats {
     pub culled_instances: usize,
     pub indirect_draws: usize,
     pub path: RenderPath,
+    pub gpu_cull_dispatches: usize,
+    pub gpu_skinned_instances: usize,
+    pub skin_fallbacks: usize,
+    /// Visibility counters remain on the device for this frame.
+    pub gpu_visibility_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -94,23 +138,66 @@ pub struct GpuCullingConfig {
 }
 
 impl ForwardFeature {
-    pub(crate) fn new(device: &Device, format: wgpu::TextureFormat, viewport: [u32; 2]) -> Self {
+    pub(crate) fn new(
+        device: &Device,
+        format: wgpu::TextureFormat,
+        viewport: [u32; 2],
+        preference: RenderPreference,
+        capabilities: RenderCapabilities,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("quasar-forward-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("forward.wgsl").into()),
         });
-        let globals_layout = uniform_layout(device, "globals-layout");
+        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("globals-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("globals"),
             contents: bytemuck::bytes_of(&Globals::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let globals_bind_group = uniform_bind_group(
-            device,
-            &globals_layout,
-            &globals_buffer,
-            "globals-bind-group",
-        );
+        let joint_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("joint-matrices"),
+            contents: bytemuck::bytes_of(&Mat4::IDENTITY.to_cols_array_2d()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("globals-bind-group"),
+            layout: &globals_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: joint_buffer.as_entire_binding(),
+                },
+            ],
+        });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material-layout"),
             entries: &[
@@ -216,6 +303,137 @@ impl ForwardFeature {
                 },
             ],
         });
+        let (cull_pipeline, finalize_pipeline, cull_layout, finalize_layout) = if capabilities
+            .supports_gpu_driven()
+        {
+            let cull_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu-cull-layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    buffer_layout_entry(4, wgpu::BufferBindingType::Uniform),
+                ],
+            });
+            let finalize_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("gpu-finalize-layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let cull_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("quasar-gpu-cull-shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("cull.wgsl").into()),
+            });
+            let finalize_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("quasar-gpu-finalize-shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("finalize.wgsl").into()),
+            });
+            let cull_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("gpu-cull-pipeline-layout"),
+                    bind_group_layouts: &[&cull_layout],
+                    push_constant_ranges: &[],
+                });
+            let finalize_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("gpu-finalize-pipeline-layout"),
+                    bind_group_layouts: &[&finalize_layout],
+                    push_constant_ranges: &[],
+                });
+            let cull_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("gpu-cull-pipeline"),
+                layout: Some(&cull_pipeline_layout),
+                module: &cull_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let finalize_pipeline =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("gpu-finalize-pipeline"),
+                    layout: Some(&finalize_pipeline_layout),
+                    module: &finalize_shader,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+            (
+                Some(cull_pipeline),
+                Some(finalize_pipeline),
+                Some(cull_layout),
+                Some(finalize_layout),
+            )
+        } else {
+            (None, None, None, None)
+        };
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("forward-layout"),
             bind_group_layouts: &[&globals_layout, &material_layout],
@@ -251,6 +469,8 @@ impl ForwardFeature {
                             8 => Float32x4,
                             9 => Float32x4,
                             10 => Float32x4,
+                            11 => Uint32,
+                            12 => Uint32,
                         ],
                     },
                 ],
@@ -280,7 +500,9 @@ impl ForwardFeature {
         Self {
             pipeline,
             globals_buffer,
+            globals_layout,
             globals_bind_group,
+            joint_buffer,
             material_layout,
             default_texture,
             default_sampler,
@@ -293,13 +515,24 @@ impl ForwardFeature {
             materials: HashMap::new(),
             pbr_materials: HashMap::new(),
             batches: Vec::new(),
+            gpu_batches: Vec::new(),
             scratch_groups: Vec::new(),
+            scratch_bounds: Vec::new(),
             instances: Vec::new(),
-            visible_instances: Vec::new(),
+            skins: Vec::new(),
+            snapshot_skin_fallbacks: 0,
             camera: None,
             light: None,
             viewport,
             stats: RenderStats::default(),
+            preference,
+            path: preference
+                .select(capabilities)
+                .expect("validated render preference"),
+            cull_pipeline,
+            finalize_pipeline,
+            cull_layout,
+            finalize_layout,
         }
     }
 
@@ -427,7 +660,11 @@ impl ForwardFeature {
     }
 
     pub(crate) fn gpu_resource_count(&self) -> usize {
-        self.meshes.len() + self.materials.len() + self.batches.len() + self.textures.len()
+        self.meshes.len()
+            + self.materials.len()
+            + self.batches.len()
+            + self.gpu_batches.len()
+            + self.textures.len()
     }
 
     pub(crate) fn set_viewport(&mut self, width: u32, height: u32) {
@@ -530,13 +767,18 @@ impl ForwardFeature {
     }
 
     pub(crate) fn stats(&self) -> RenderStats {
-        self.stats
+        RenderStats {
+            path: self.path,
+            ..self.stats
+        }
     }
 }
 
 impl RenderFeature for ForwardFeature {
     fn extract(&mut self, snapshot: &RenderSnapshot) {
         self.instances.clone_from(&snapshot.instances);
+        self.skins.clone_from(&snapshot.skins);
+        self.snapshot_skin_fallbacks = snapshot.skin_fallbacks;
         self.camera = snapshot.camera;
         self.light = snapshot.lights.first().copied();
     }
@@ -559,23 +801,12 @@ impl RenderFeature for ForwardFeature {
             near: 0.1,
             far: 1000.0,
         });
-        let projection = Mat4::perspective_rh(
+        let view_projection = Mat4::perspective_rh(
             camera.fov_y_radians.max(0.1),
             self.viewport[0] as f32 / self.viewport[1].max(1) as f32,
             camera.near.max(0.001),
             camera.far.max(camera.near + 1.0),
-        );
-        let view_projection = projection * transform_matrix(camera.transform).inverse();
-        self.visible_instances.clear();
-        let mut skipped_instances = 0usize;
-        self.visible_instances
-            .extend(self.instances.iter().copied().filter(|instance| {
-                if !self.meshes.contains_key(&instance.mesh.id) {
-                    skipped_instances += 1;
-                    return false;
-                }
-                sphere_visible(view_projection, instance.transform, instance.bounds)
-            }));
+        ) * transform_matrix(camera.transform).inverse();
         let light = self.light.unwrap_or(RenderLight {
             direction: [-0.4, -1.0, -0.5],
             color: [1.0; 3],
@@ -598,139 +829,305 @@ impl RenderFeature for ForwardFeature {
             ambient: [0.2, 0.22, 0.25, 0.0],
         };
         queue.write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        let mut matrices = Vec::new();
+        let mut skin_ranges = Vec::with_capacity(self.skins.len());
+        for skin in &self.skins {
+            if skin.matrices.is_empty() || skin.matrices.iter().any(|matrix| !matrix.is_finite()) {
+                skin_ranges.push(None);
+            } else {
+                skin_ranges.push(Some((matrices.len() as u32, skin.matrices.len() as u32)));
+                matrices.extend(skin.matrices.iter().map(Mat4::to_cols_array_2d));
+            }
+        }
+        if matrices.is_empty() {
+            matrices.push(Mat4::IDENTITY.to_cols_array_2d());
+        }
+        let matrix_bytes = bytemuck::cast_slice(&matrices);
+        if matrix_bytes.len() as u64 > device.limits().max_storage_buffer_binding_size as u64 {
+            return Err(EngineError::Unsupported(
+                "skin palettes exceed storage buffer limit".into(),
+            ));
+        }
+        if self.joint_buffer.size() < matrix_bytes.len() as u64 {
+            self.joint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("joint-matrices"),
+                size: (matrix_bytes.len() as u64).next_power_of_two(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("globals-bind-group"),
+                layout: &self.globals_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.globals_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.joint_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+        }
+        queue.write_buffer(&self.joint_buffer, 0, matrix_bytes);
         for (_, _, values) in &mut self.scratch_groups {
             values.clear();
         }
-        let mut group_count = 0usize;
-        for instance in &self.visible_instances {
+        for bounds in &mut self.scratch_bounds {
+            bounds.clear();
+        }
+        let mut skipped = 0;
+        let mut culled = 0;
+        let mut skin_fallbacks = self.snapshot_skin_fallbacks;
+        let mut skinned = 0;
+        let mut group_count = 0;
+        for instance in &self.instances {
+            if !self.meshes.contains_key(&instance.mesh.id) {
+                skipped += 1;
+                continue;
+            }
+            let range = instance
+                .skin
+                .and_then(|index| skin_ranges.get(index as usize).copied().flatten());
+            if instance.skin.is_some() && range.is_none() {
+                skin_fallbacks += 1;
+            }
+            let bounds = instance
+                .skin
+                .and_then(|index| self.skins.get(index as usize))
+                .filter(|_| range.is_some())
+                .map(|skin| skinned_bounds(instance.bounds, &skin.matrices))
+                .unwrap_or(instance.bounds);
+            if self.path != RenderPath::GpuDriven
+                && !sphere_visible(view_projection, instance.transform, bounds)
+            {
+                culled += 1;
+                continue;
+            }
+            if range.is_some() {
+                skinned += 1;
+            }
             let key = (instance.mesh.id, instance.material.id);
-            let needs_new_group = self
-                .scratch_groups
-                .get(group_count)
-                .is_none_or(|(mesh, material, _)| (*mesh, *material) != key);
-            if needs_new_group {
+            if group_count == 0 || {
+                let group = &self.scratch_groups[group_count - 1];
+                (group.0, group.1) != key
+            } {
                 if let Some(group) = self.scratch_groups.get_mut(group_count) {
                     group.0 = key.0;
                     group.1 = key.1;
                 } else {
                     self.scratch_groups.push((key.0, key.1, Vec::new()));
                 }
+                if self.scratch_bounds.len() == group_count {
+                    self.scratch_bounds.push(Vec::new());
+                }
                 group_count += 1;
             }
-            let values = &mut self.scratch_groups[group_count - 1].2;
-            values.push(InstanceData {
+            let (skin_base, skin_count) = range.unwrap_or((u32::MAX, 0));
+            self.scratch_groups[group_count - 1].2.push(InstanceData {
                 model: transform_matrix(instance.transform).to_cols_array_2d(),
-                color: self
-                    .materials
-                    .get(&instance.material.id)
-                    .map(|m| m.color)
-                    .unwrap_or([0.8; 4]),
+                color: [1.0; 4],
+                skin_base,
+                skin_count,
+                _padding: [0; 2],
             });
+            self.scratch_bounds[group_count - 1].push(bounds);
         }
         self.scratch_groups.truncate(group_count);
-        self.batches.truncate(self.scratch_groups.len());
-        for (index, (mesh, material, values)) in self.scratch_groups.iter().enumerate() {
-            let required = values.len();
-            let batch = if let Some(batch) = self.batches.get_mut(index) {
-                batch
-            } else {
-                self.batches.push(GpuBatch {
-                    mesh: *mesh,
-                    material: *material,
-                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("instance-buffer"),
-                        size: (std::mem::size_of::<InstanceData>() * required.max(1)) as u64,
+        self.scratch_bounds.truncate(group_count);
+        if self.path == RenderPath::GpuDriven {
+            self.batches.clear();
+            self.gpu_batches.truncate(group_count);
+            for (index, (mesh, material, values)) in self.scratch_groups.iter().enumerate() {
+                let count = values.len();
+                let bytes = count * std::mem::size_of::<CullInstanceData>();
+                if bytes as u64 > device.limits().max_storage_buffer_binding_size as u64
+                    || count.div_ceil(64)
+                        > device.limits().max_compute_workgroups_per_dimension as usize
+                {
+                    return Err(EngineError::Unsupported(
+                        "instance batch exceeds GPU culling limits".into(),
+                    ));
+                }
+                if self
+                    .gpu_batches
+                    .get(index)
+                    .is_none_or(|batch| batch.capacity < count)
+                {
+                    let batch = GpuDrivenBatch::new(
+                        device,
+                        &self.globals_buffer,
+                        self.cull_layout.as_ref().expect("compute supported"),
+                        self.finalize_layout.as_ref().expect("compute supported"),
+                        *mesh,
+                        *material,
+                        count,
+                    );
+                    if index == self.gpu_batches.len() {
+                        self.gpu_batches.push(batch);
+                    } else {
+                        self.gpu_batches[index] = batch;
+                    }
+                }
+                let batch = &mut self.gpu_batches[index];
+                batch.mesh = *mesh;
+                batch.material = *material;
+                batch.count = count as u32;
+                let input = values
+                    .iter()
+                    .zip(&self.scratch_bounds[index])
+                    .map(|(value, bounds)| CullInstanceData {
+                        model: value.model,
+                        color: value.color,
+                        bounds: *bounds,
+                        skin_base: value.skin_base,
+                        skin_count: value.skin_count,
+                        _padding: [0; 2],
+                    })
+                    .collect::<Vec<_>>();
+                queue.write_buffer(&batch.input, 0, bytemuck::cast_slice(&input));
+                queue.write_buffer(&batch.counter, 0, bytemuck::bytes_of(&0_u32));
+                queue.write_buffer(
+                    &batch.params,
+                    0,
+                    bytemuck::cast_slice(&[count as u32, self.meshes[mesh].index_count, 0, 0]),
+                );
+            }
+        } else {
+            self.gpu_batches.clear();
+            self.batches.truncate(group_count);
+            for (index, (mesh, material, values)) in self.scratch_groups.iter().enumerate() {
+                let count = values.len();
+                if self
+                    .batches
+                    .get(index)
+                    .is_none_or(|batch| batch.capacity < count)
+                {
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("cpu-instance-buffer"),
+                        size: (count.max(1) * std::mem::size_of::<InstanceData>()) as u64,
                         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
-                    }),
-                    indirect: device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("indexed-indirect-args"),
-                        size: std::mem::size_of::<IndirectDrawIndexedArgs>() as u64,
+                    });
+                    let indirect = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("cpu-indirect"),
+                        size: 20,
                         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
+                    });
+                    let batch = GpuBatch {
+                        mesh: *mesh,
+                        material: *material,
+                        buffer,
+                        indirect,
+                        capacity: count,
+                        count: count as u32,
+                    };
+                    if index == self.batches.len() {
+                        self.batches.push(batch);
+                    } else {
+                        self.batches[index] = batch;
+                    }
+                }
+                let batch = &mut self.batches[index];
+                batch.mesh = *mesh;
+                batch.material = *material;
+                batch.count = count as u32;
+                queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(values));
+                queue.write_buffer(
+                    &batch.indirect,
+                    0,
+                    bytemuck::bytes_of(&IndirectDrawIndexedArgs {
+                        index_count: self.meshes[mesh].index_count,
+                        instance_count: count as u32,
+                        ..IndirectDrawIndexedArgs::default()
                     }),
-                    capacity: required.max(1),
-                    count: 0,
-                });
-                self.batches.last_mut().expect("batch inserted")
-            };
-            batch.mesh = *mesh;
-            batch.material = *material;
-            if batch.capacity < required {
-                batch.capacity = required.next_power_of_two();
-                batch.buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("instance-buffer"),
-                    size: (std::mem::size_of::<InstanceData>() * batch.capacity) as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                );
             }
-            queue.write_buffer(&batch.buffer, 0, bytemuck::cast_slice(values));
-            queue.write_buffer(
-                &batch.indirect,
-                0,
-                bytemuck::bytes_of(&IndirectDrawIndexedArgs {
-                    index_count: self
-                        .meshes
-                        .get(mesh)
-                        .map(|mesh| mesh.index_count)
-                        .unwrap_or(0),
-                    instance_count: required as u32,
-                    first_index: 0,
-                    base_vertex: 0,
-                    first_instance: 0,
-                }),
-            );
-            batch.count = required as u32;
         }
         self.stats = RenderStats {
             instances: self.instances.len(),
-            batches: self.scratch_groups.len(),
-            draw_calls: self.scratch_groups.len(),
+            batches: group_count,
+            draw_calls: group_count,
             instance_upload_bytes: self
                 .scratch_groups
                 .iter()
-                .map(|(_, _, values)| (values.len() * std::mem::size_of::<InstanceData>()) as u64)
+                .map(|(_, _, v)| {
+                    v.len() as u64
+                        * if self.path == RenderPath::GpuDriven {
+                            112
+                        } else {
+                            96
+                        }
+                })
                 .sum(),
-            skipped_instances,
-            fallback: false,
-            culled_instances: self
-                .instances
-                .len()
-                .saturating_sub(self.visible_instances.len()),
-            indirect_draws: self.scratch_groups.len(),
-            path: RenderPath::Indirect,
+            skipped_instances: skipped,
+            fallback: self.preference == RenderPreference::Auto
+                && self.path != RenderPath::GpuDriven,
+            culled_instances: culled,
+            indirect_draws: group_count,
+            path: self.path,
+            gpu_cull_dispatches: if self.path == RenderPath::GpuDriven {
+                group_count * 2
+            } else {
+                0
+            },
+            gpu_skinned_instances: skinned,
+            skin_fallbacks,
+            gpu_visibility_pending: self.path == RenderPath::GpuDriven,
         };
         Ok(())
     }
 
-    fn queue(&mut self, _snapshot: &RenderSnapshot) {
-        self.instances.sort_by_key(|instance| {
-            (
-                instance.mesh.id.index,
-                instance.mesh.id.generation,
-                instance.material.id.index,
-                instance.material.id.generation,
-            )
-        });
+    fn compute<'a>(&'a self, node: &str, pass: &mut wgpu::ComputePass<'a>) {
+        if node != "gpu_cull" || self.path != RenderPath::GpuDriven {
+            return;
+        }
+        pass.set_pipeline(self.cull_pipeline.as_ref().expect("compute supported"));
+        for batch in &self.gpu_batches {
+            pass.set_bind_group(0, &batch.cull_bind_group, &[]);
+            pass.dispatch_workgroups((batch.count as usize).div_ceil(64) as u32, 1, 1);
+            pass.set_pipeline(self.finalize_pipeline.as_ref().expect("compute supported"));
+            pass.set_bind_group(0, &batch.finalize_bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+            pass.set_pipeline(self.cull_pipeline.as_ref().expect("compute supported"));
+        }
     }
 
     fn render<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.globals_bind_group, &[]);
-        for batch in &self.batches {
-            let Some(mesh) = self.meshes.get(&batch.mesh) else {
-                continue;
-            };
-            pass.set_vertex_buffer(0, mesh.vertex.slice(..));
-            pass.set_vertex_buffer(1, batch.buffer.slice(..));
-            pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
-            let material = self
-                .pbr_materials
-                .get(&batch.material)
-                .unwrap_or(&self.default_material);
-            pass.set_bind_group(1, &material.bind_group, &[]);
-            pass.draw_indexed_indirect(&batch.indirect, 0);
+        if self.path == RenderPath::GpuDriven {
+            for batch in &self.gpu_batches {
+                let Some(mesh) = self.meshes.get(&batch.mesh) else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_vertex_buffer(1, batch.output.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                let material = self
+                    .pbr_materials
+                    .get(&batch.material)
+                    .unwrap_or(&self.default_material);
+                pass.set_bind_group(1, &material.bind_group, &[]);
+                pass.draw_indexed_indirect(&batch.indirect, 0);
+            }
+        } else {
+            for batch in &self.batches {
+                let Some(mesh) = self.meshes.get(&batch.mesh) else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, mesh.vertex.slice(..));
+                pass.set_vertex_buffer(1, batch.buffer.slice(..));
+                pass.set_index_buffer(mesh.index.slice(..), wgpu::IndexFormat::Uint32);
+                let material = self
+                    .pbr_materials
+                    .get(&batch.material)
+                    .unwrap_or(&self.default_material);
+                pass.set_bind_group(1, &material.bind_group, &[]);
+                pass.draw_indexed_indirect(&batch.indirect, 0);
+            }
         }
     }
 }
@@ -743,34 +1140,123 @@ fn transform_matrix(transform: TransformState) -> Mat4 {
     )
 }
 
-fn uniform_layout(device: &Device, label: &str) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some(label),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    })
+fn buffer_layout_entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
 }
 
-fn uniform_bind_group(
-    device: &Device,
-    layout: &wgpu::BindGroupLayout,
-    buffer: &wgpu::Buffer,
-    label: &str,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
-    })
+impl GpuDrivenBatch {
+    fn new(
+        device: &Device,
+        globals: &wgpu::Buffer,
+        cull_layout: &wgpu::BindGroupLayout,
+        finalize_layout: &wgpu::BindGroupLayout,
+        mesh: AssetId<MeshAsset>,
+        material: AssetId<MaterialAsset>,
+        count: usize,
+    ) -> Self {
+        let capacity = count.max(1);
+        let buffer = |label, size, usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let input = buffer(
+            "cull-input",
+            capacity as u64 * 112,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let output = buffer(
+            "cull-output",
+            capacity as u64 * 96,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_SRC,
+        );
+        let counter = buffer(
+            "cull-counter",
+            4,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let indirect = buffer(
+            "cull-indirect",
+            20,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_SRC,
+        );
+        let params = buffer(
+            "cull-params",
+            16,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        fn entry(binding: u32, b: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: b.as_entire_binding(),
+            }
+        }
+        let cull_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cull-bind-group"),
+            layout: cull_layout,
+            entries: &[
+                entry(0, globals),
+                entry(1, &input),
+                entry(2, &output),
+                entry(3, &counter),
+                entry(4, &params),
+            ],
+        });
+        let finalize_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("finalize-bind-group"),
+            layout: finalize_layout,
+            entries: &[entry(0, &counter), entry(1, &indirect), entry(2, &params)],
+        });
+        Self {
+            mesh,
+            material,
+            input,
+            output,
+            counter,
+            indirect,
+            params,
+            count: count as u32,
+            cull_bind_group,
+            finalize_bind_group,
+            capacity,
+        }
+    }
 }
+
+/// A linear blend of positive normalized weights lies inside the union's AABB.
+fn skinned_bounds(bounds: [f32; 4], matrices: &[Mat4]) -> [f32; 4] {
+    let center = Vec3::new(bounds[0], bounds[1], bounds[2]);
+    let mut min = center - Vec3::splat(bounds[3]);
+    let mut max = center + Vec3::splat(bounds[3]);
+    for matrix in matrices {
+        let c = matrix.transform_point3(center);
+        // Frobenius norm bounds the spectral norm even when a palette contains shear.
+        let radius = bounds[3]
+            * (matrix.x_axis.truncate().length_squared()
+                + matrix.y_axis.truncate().length_squared()
+                + matrix.z_axis.truncate().length_squared())
+            .sqrt();
+        min = min.min(c - Vec3::splat(radius));
+        max = max.max(c + Vec3::splat(radius));
+    }
+    let c = (min + max) * 0.5;
+    [c.x, c.y, c.z, (max - c).length()]
+}
+
+#[cfg(test)]
+#[path = "forward_tests.rs"]
+mod gpu_tests;

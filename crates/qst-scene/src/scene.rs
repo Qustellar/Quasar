@@ -3,7 +3,9 @@ use super::*;
 pub const LEGACY_SCENE_SCHEMA_VERSION: u32 = 1;
 pub const SCHEMA_2: u32 = 2;
 pub const SCHEMA_3: u32 = 3;
-pub const SCENE_SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_4: u32 = 4;
+pub const SCENE_SCHEMA_4: u32 = SCHEMA_4;
+pub const SCENE_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Transform {
@@ -48,6 +50,16 @@ impl Default for RenderBounds {
 pub struct SkinBinding {
     pub skeleton: Option<String>,
     pub skin: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SceneSkin {
+    pub name: String,
+    pub joints: Vec<EntityId>,
+    #[serde(default)]
+    pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+    #[serde(default)]
+    pub skeleton: Option<EntityId>,
 }
 
 #[derive(Component, Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +330,8 @@ pub struct SceneAsset {
     #[serde(default)]
     pub source_gltf: Option<std::path::PathBuf>,
     pub entities: Vec<SceneEntity>,
+    #[serde(default)]
+    pub skins: Vec<SceneSkin>,
 }
 
 impl Default for SceneAsset {
@@ -327,6 +341,7 @@ impl Default for SceneAsset {
             name: "Untitled".into(),
             source_gltf: None,
             entities: Vec::new(),
+            skins: Vec::new(),
         }
     }
 }
@@ -479,6 +494,7 @@ impl SceneAsset {
         }
         self.validate_ids()?;
         self.hierarchy_order()?;
+        self.validate_skins()?;
         if self.entities.iter().any(|entity| {
             !entity.local_transform.translation.is_finite()
                 || !entity.local_transform.rotation.is_finite()
@@ -524,15 +540,18 @@ impl SceneAsset {
                 };
             }
             scene.schema_version = SCENE_SCHEMA_VERSION;
-            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 4");
+            tracing::info!(scene = %scene.name, "migrated scene schema 1 to schema 5");
         } else if scene.schema_version == SCHEMA_2 {
             for entity in &mut scene.entities {
                 entity.local_transform = entity.transform;
             }
             scene.schema_version = SCENE_SCHEMA_VERSION;
-            tracing::info!(scene = %scene.name, "migrated scene schema 2 to schema 4");
+            tracing::info!(scene = %scene.name, "migrated scene schema 2 to schema 5");
         } else if scene.schema_version == SCHEMA_3 {
-            tracing::info!(scene = %scene.name, "migrated scene schema 3 to schema 4");
+            tracing::info!(scene = %scene.name, "migrated scene schema 3 to schema 5");
+            scene.schema_version = SCENE_SCHEMA_VERSION;
+        } else if scene.schema_version == SCHEMA_4 {
+            tracing::info!(scene = %scene.name, "migrated scene schema 4 to schema 5");
             scene.schema_version = SCENE_SCHEMA_VERSION;
         } else if scene.schema_version != SCENE_SCHEMA_VERSION {
             return Err(EngineError::Unsupported(format!(
@@ -542,6 +561,7 @@ impl SceneAsset {
         }
         scene.validate_ids()?;
         scene.hierarchy_order()?;
+        scene.validate_skins()?;
         for entity in &mut scene.entities {
             if !entity.local_transform.translation.is_finite()
                 || !entity.local_transform.rotation.is_finite()
@@ -565,6 +585,87 @@ impl SceneAsset {
             entity.transform = entity.local_transform;
         }
         Ok(scene)
+    }
+
+    pub fn validate_skins(&self) -> EngineResult<()> {
+        let entity_ids = self
+            .entities
+            .iter()
+            .map(|entity| entity.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut names = std::collections::HashSet::with_capacity(self.skins.len());
+        for skin in &self.skins {
+            if skin.name.trim().is_empty() || !names.insert(skin.name.clone()) {
+                return Err(EngineError::Unsupported(format!(
+                    "duplicate or empty scene skin name {}",
+                    skin.name
+                )));
+            }
+            if skin.joints.is_empty() {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} has no joints",
+                    skin.name
+                )));
+            }
+            let unique = skin
+                .joints
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            if unique.len() != skin.joints.len() {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} has duplicate joints",
+                    skin.name
+                )));
+            }
+            if !skin.joints.iter().all(|joint| entity_ids.contains(joint)) {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} references a missing joint",
+                    skin.name
+                )));
+            }
+            if let Some(skeleton) = skin.skeleton
+                && !entity_ids.contains(&skeleton)
+            {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} references a missing skeleton root",
+                    skin.name
+                )));
+            }
+            if skin.inverse_bind_matrices.len() != skin.joints.len() {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} has {} inverse bind matrices for {} joints",
+                    skin.name,
+                    skin.inverse_bind_matrices.len(),
+                    skin.joints.len()
+                )));
+            }
+            if skin
+                .inverse_bind_matrices
+                .iter()
+                .any(|matrix| matrix.iter().flatten().any(|value| !value.is_finite()))
+            {
+                return Err(EngineError::Unsupported(format!(
+                    "scene skin {} contains a non-finite inverse bind matrix",
+                    skin.name
+                )));
+            }
+        }
+        for entity in &self.entities {
+            if let Some(name) = entity
+                .skin
+                .as_ref()
+                .and_then(|binding| binding.skin.as_ref())
+                && !self.skins.is_empty()
+                && !names.contains(name)
+            {
+                return Err(EngineError::Unsupported(format!(
+                    "entity {} references unknown skin {name}",
+                    entity.id.0
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn create_entity(&mut self, name: impl Into<String>) -> EntityId {

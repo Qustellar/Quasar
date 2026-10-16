@@ -22,6 +22,9 @@ impl EngineApp {
                 self.diagnostics.asset_cache_misses += 1;
             }
             scene.source_gltf = Some(source);
+            if scene.skins.is_empty() {
+                scene.skins = imported.scene.skins.clone();
+            }
             Some(imported)
         } else {
             None
@@ -30,6 +33,7 @@ impl EngineApp {
         self.set_scene(scene)?;
         if let Some(imported) = imported {
             self.register_gltf_assets(imported.meshes, imported.textures);
+            self.register_gltf_animations(imported.animations);
             if let Some(source) = self.scene.source_gltf.clone() {
                 self.assets.watch_path(&source)?;
                 self.gltf_path = Some(source);
@@ -70,6 +74,7 @@ impl EngineApp {
             entity.transform = entity.local_transform;
         }
         scene.hierarchy_order()?;
+        scene.validate_skins()?;
         self.fixed_time.accumulator_seconds = 0.0;
         self.last_frame = Instant::now();
         #[cfg(feature = "editor")]
@@ -203,6 +208,9 @@ impl EngineApp {
     }
 
     pub(crate) fn clear_gltf_assets(&mut self) {
+        for name in std::mem::take(&mut self.gltf_animation_names) {
+            self.animation_clips.remove(&name);
+        }
         for name in std::mem::take(&mut self.gltf_texture_names) {
             if let Some(handle) = self.texture_names.remove(&name) {
                 self.texture_assets.remove(handle);
@@ -215,6 +223,7 @@ impl EngineApp {
         for name in std::mem::take(&mut self.gltf_mesh_names) {
             if let Some(handle) = self.mesh_names.remove(&name) {
                 self.mesh_assets.remove(handle);
+                self.textured_meshes.remove(&handle.id);
                 self.assets.invalidate::<MeshAsset>(&name);
                 if let Some(renderer) = &mut self.renderer {
                     renderer.remove_mesh(handle);
@@ -272,13 +281,18 @@ impl EngineApp {
     }
 
     pub(crate) fn apply_gltf_import(&mut self, imported: GltfImport) -> EngineResult<()> {
-        let animations = imported.animations.clone();
+        let animations = imported.animations;
         self.set_scene(imported.scene)?;
         self.register_gltf_assets(imported.meshes, imported.textures);
+        self.register_gltf_animations(animations);
+        Ok(())
+    }
+
+    pub(crate) fn register_gltf_animations(&mut self, animations: Vec<AnimationClip>) {
         for animation in animations {
+            self.gltf_animation_names.push(animation.name.clone());
             self.register_animation_clip(animation);
         }
-        Ok(())
     }
 
     pub(crate) fn register_gltf_assets(
@@ -338,15 +352,14 @@ impl EngineApp {
                     indices: mesh.indices.clone(),
                 },
             );
+            let textured = TexturedMeshAsset {
+                vertices: pbr_vertices,
+                indices: mesh.indices,
+            };
             if let Some(renderer) = &mut self.renderer {
-                renderer.upload_textured_mesh(
-                    handle,
-                    &TexturedMeshAsset {
-                        vertices: pbr_vertices,
-                        indices: mesh.indices,
-                    },
-                );
+                renderer.upload_textured_mesh(handle, &textured);
             }
+            self.textured_meshes.insert(handle.id, textured);
             let material = MaterialAsset {
                 color: mesh.color,
                 metallic: mesh.metallic,
@@ -373,6 +386,7 @@ impl EngineApp {
         let name = name.into();
         if let Some(old) = self.mesh_names.remove(&name) {
             self.mesh_assets.remove(old);
+            self.textured_meshes.remove(&old.id);
             if let Some(renderer) = &mut self.renderer {
                 renderer.remove_mesh(old);
             }

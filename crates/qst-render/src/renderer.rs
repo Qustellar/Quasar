@@ -10,10 +10,18 @@ pub struct Renderer {
     compiled_graph: CompiledRenderGraph,
     depth_view: wgpu::TextureView,
     forward: ForwardFeature,
+    capabilities: RenderCapabilities,
 }
 
 impl Renderer {
     pub async fn new(window: Arc<winit::window::Window>) -> EngineResult<Self> {
+        Self::new_with_preference(window, RenderPreference::Auto).await
+    }
+
+    pub async fn new_with_preference(
+        window: Arc<winit::window::Window>,
+        preference: RenderPreference,
+    ) -> EngineResult<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::from_env_or_default());
         let surface = instance
             .create_surface(window.clone())
@@ -28,19 +36,26 @@ impl Renderer {
             .await
             .map_err(|e| EngineError::Runtime(e.to_string()))?;
         tracing::info!(adapter = %adapter.get_info().name, backend = ?adapter.get_info().backend, "wgpu adapter selected");
+        let capabilities = RenderCapabilities::from_adapter(&adapter);
+        preference.select(capabilities)?;
+        if !capabilities.storage_buffers || !capabilities.indirect_draw {
+            return Err(EngineError::Unsupported(
+                "renderer requires vertex storage buffers and indirect execution".into(),
+            ));
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .map_err(|e| EngineError::Runtime(e.to_string()))?;
         tracing::info!("wgpu device ready");
         let size = window.inner_size();
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities
+        let surface_capabilities = surface.get_capabilities(&adapter);
+        let format = surface_capabilities
             .formats
             .iter()
             .copied()
             .find(|f| f.is_srgb())
-            .unwrap_or(capabilities.formats[0]);
+            .unwrap_or(surface_capabilities.formats[0]);
         let config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| EngineError::Runtime("surface has no default configuration".into()))?;
@@ -52,8 +67,14 @@ impl Renderer {
             "wgpu surface configured"
         );
         let depth_view = depth_view(&device, config.width, config.height);
-        let forward = ForwardFeature::new(&device, format, [config.width, config.height]);
-        let render_graph = RenderGraph::default_forward();
+        let forward = ForwardFeature::new(
+            &device,
+            format,
+            [config.width, config.height],
+            preference,
+            capabilities,
+        );
+        let render_graph = RenderGraph::for_path(preference.select(capabilities)?);
         let compiled_graph = render_graph.compile()?;
         tracing::info!("forward pipeline ready");
         Ok(Self {
@@ -66,7 +87,12 @@ impl Renderer {
             compiled_graph,
             depth_view,
             forward,
+            capabilities,
         })
+    }
+
+    pub fn capabilities(&self) -> RenderCapabilities {
+        self.capabilities
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -176,25 +202,72 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("quasar-frame"),
             });
-        {
+        encode_graph(
+            &mut encoder,
+            &self.compiled_graph,
+            &self.forward,
+            &self.features,
+            RenderTargets {
+                color: &view,
+                depth: &self.depth_view,
+                clear: wgpu::Color {
+                    r: 0.08,
+                    g: 0.1,
+                    b: 0.12,
+                    a: 1.0,
+                },
+            },
+        );
+        overlay(&self.device, &self.queue, &mut encoder, &view)?;
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+}
+
+pub(crate) struct RenderTargets<'a> {
+    pub color: &'a wgpu::TextureView,
+    pub depth: &'a wgpu::TextureView,
+    pub clear: wgpu::Color,
+}
+
+/// Shared by surface rendering and headless GPU validation.
+pub(crate) fn encode_graph(
+    encoder: &mut wgpu::CommandEncoder,
+    graph: &CompiledRenderGraph,
+    forward: &ForwardFeature,
+    features: &[Box<dyn RenderFeature>],
+    targets: RenderTargets<'_>,
+) {
+    for (node, execution) in &graph.steps {
+        let _node_span = tracing::debug_span!("render_graph_pass", pass = %node).entered();
+        if *execution == RenderExecution::Prepare {
+            encoder.insert_debug_marker(node);
+        }
+        if *execution == RenderExecution::Compute {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(node),
+                timestamp_writes: None,
+            });
+            forward.compute(node, &mut pass);
+            for feature in features {
+                feature.compute(node, &mut pass);
+            }
+        }
+        if *execution == RenderExecution::Render {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("forward"),
+                label: Some(node),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: targets.color,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.08,
-                            g: 0.1,
-                            b: 0.12,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(targets.clear),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
+                    view: targets.depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -204,20 +277,11 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            for node in &self.compiled_graph.order {
-                let _node_span = tracing::debug_span!("render_graph_pass", pass = %node).entered();
-                if node == "forward" {
-                    self.forward.render(&mut pass);
-                    for feature in &self.features {
-                        feature.render(&mut pass);
-                    }
-                }
+            forward.render(&mut pass);
+            for feature in features {
+                feature.render(&mut pass);
             }
         }
-        overlay(&self.device, &self.queue, &mut encoder, &view)?;
-        self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
     }
 }
 

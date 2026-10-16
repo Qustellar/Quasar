@@ -66,13 +66,21 @@ impl EngineApp {
                     if self.gltf_path.as_ref() == Some(&path) =>
                 {
                     if self.scene_path.is_some() {
-                        if let Err(error) = self.validate_scene_assets(&self.scene, Some(&imported))
+                        let mut candidate = self.scene.clone();
+                        candidate.skins = imported.scene.skins.clone();
+                        if let Err(error) = candidate
+                            .validate_skins()
+                            .and_then(|_| self.validate_scene_assets(&candidate, Some(&imported)))
                         {
                             self.diagnostics.last_reload = Some(format!("Reload failed: {error}"));
                             continue;
                         }
+                        let imported_skins = imported.scene.skins.clone();
+                        let imported_animations = imported.animations.clone();
                         self.clear_gltf_assets();
                         self.register_gltf_assets(imported.meshes, imported.textures);
+                        self.scene.skins = imported_skins;
+                        self.register_gltf_animations(imported_animations);
                     } else {
                         let mut imported = imported;
                         imported.scene.source_gltf = Some(path.clone());

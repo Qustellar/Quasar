@@ -100,6 +100,86 @@ fn schema_three_is_migrated_and_schema_four_fields_default() {
 }
 
 #[test]
+fn schema_four_migrates_with_empty_skins() {
+    let path = std::env::temp_dir().join(format!("quasar-schema4-{}.ron", std::process::id()));
+    let mut scene = SceneAsset::new("schema4");
+    scene.schema_version = SCHEMA_4;
+    scene.create_entity("Root");
+    let legacy = ron::to_string(&scene).unwrap().replace(",skins:[]", "");
+    std::fs::write(&path, legacy).unwrap();
+    let loaded = SceneAsset::load_ron(&path).unwrap();
+    assert_eq!(loaded.schema_version, SCENE_SCHEMA_VERSION);
+    assert!(loaded.skins.is_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn scene_skin_round_trip_and_validation() {
+    let path = std::env::temp_dir().join(format!("quasar-skin-{}.ron", std::process::id()));
+    let mut scene = SceneAsset::new("skin");
+    let root = scene.create_entity("Root");
+    let joint = scene.create_entity("Joint");
+    scene.skins.push(SceneSkin {
+        name: "Body".into(),
+        joints: vec![joint],
+        inverse_bind_matrices: vec![Mat4::IDENTITY.to_cols_array_2d()],
+        skeleton: Some(root),
+    });
+    scene.save_ron(&path).unwrap();
+    let loaded = SceneAsset::load_ron(&path).unwrap();
+    assert_eq!(loaded.skins, scene.skins);
+
+    let mut invalid_joint = loaded.clone();
+    invalid_joint.skins[0].joints[0] = EntityId::new(999);
+    assert!(invalid_joint.validate_skins().is_err());
+    let mut invalid_count = loaded.clone();
+    invalid_count.skins[0].inverse_bind_matrices.clear();
+    invalid_count.skins[0]
+        .inverse_bind_matrices
+        .push(Mat4::IDENTITY.to_cols_array_2d());
+    invalid_count.skins[0].joints.push(root);
+    assert!(invalid_count.validate_skins().is_err());
+    let mut duplicate = loaded;
+    duplicate.skins.push(duplicate.skins[0].clone());
+    assert!(duplicate.validate_skins().is_err());
+    let mut repeated_joint = scene.clone();
+    repeated_joint.skins[0].joints.push(joint);
+    repeated_joint.skins[0]
+        .inverse_bind_matrices
+        .push(Mat4::IDENTITY.to_cols_array_2d());
+    assert!(repeated_joint.validate_skins().is_err());
+    scene.skins[0].inverse_bind_matrices[0][0][0] = f32::NAN;
+    assert!(scene.validate_skins().is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn gltf_skin_maps_node_ids_and_primitive_bindings() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/tests/animated-skin.gltf");
+    let imported = import_gltf(&path).unwrap();
+    assert_eq!(imported.skins[0].joints, [EntityId::new(3)]);
+    assert_eq!(imported.skins[0].skeleton, Some(EntityId::new(3)));
+    assert_eq!(imported.skins[0].inverse_bind_matrices[0][3][0], -1.0);
+    let primitives = imported
+        .scene
+        .entities
+        .iter()
+        .filter(|entity| entity.mesh.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(primitives.len(), 2);
+    assert!(
+        primitives
+            .iter()
+            .all(|entity| entity.skin.as_ref().unwrap().skin.as_deref()
+                == Some(imported.skins[0].name.as_str()))
+    );
+    assert_eq!(imported.animations[0].channels[0].target, EntityId::new(3));
+    assert_eq!(imported.meshes[0].joints.len(), 3);
+    imported.scene.validate_ids().unwrap();
+    imported.scene.validate_skins().unwrap();
+}
+
+#[test]
 fn scene_rejects_invalid_bounds_and_duplicate_ids() {
     let path =
         std::env::temp_dir().join(format!("quasar-invalid-scene-{}.ron", std::process::id()));

@@ -34,7 +34,7 @@ pub struct SkinnedVertex {
     pub weights: [f32; 4],
 }
 
-/// CPU reference implementation used by the fallback renderer and tests.
+/// CPU numerical reference; rendering uses vertex-stage skinning on both culling paths.
 pub fn skin_vertices(vertices: &[SkinnedVertex], joint_matrices: &[Mat4]) -> Vec<[f32; 3]> {
     vertices
         .iter()
@@ -46,15 +46,21 @@ pub fn skin_vertices(vertices: &[SkinnedVertex], joint_matrices: &[Mat4]) -> Vec
                 1.0,
             ]);
             let mut result = qst_core::glam::Vec4::ZERO;
+            let mut total = 0.0;
             for index in 0..4 {
-                if let Some(matrix) = joint_matrices.get(vertex.joints[index] as usize) {
-                    result += (*matrix * position) * vertex.weights[index];
+                if joint_matrices.is_empty() {
+                    break;
                 }
+                let matrix =
+                    joint_matrices[(vertex.joints[index] as usize).min(joint_matrices.len() - 1)];
+                let weight = vertex.weights[index].max(0.0);
+                result += (matrix * position) * weight;
+                total += weight;
             }
-            if result.w.abs() > f32::EPSILON {
-                (result / result.w).truncate().to_array()
+            if total > 0.000001 {
+                (result / total).truncate().to_array()
             } else {
-                result.truncate().to_array()
+                vertex.position
             }
         })
         .collect()
@@ -199,6 +205,13 @@ pub struct RenderInstance {
     pub bounds: [f32; 4],
     pub mesh: Handle<MeshAsset>,
     pub material: Handle<MaterialAsset>,
+    /// Index into `RenderSnapshot::skins` for this instance.
+    pub skin: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderSkin {
+    pub matrices: Arc<[Mat4]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -219,8 +232,59 @@ pub struct RenderLight {
 #[derive(Clone, Debug, Default)]
 pub struct RenderSnapshot {
     pub instances: Vec<RenderInstance>,
+    pub skins: Vec<RenderSkin>,
+    /// Instances whose requested scene skin could not produce a finite palette.
+    pub skin_fallbacks: usize,
     pub camera: Option<RenderCamera>,
     pub lights: Vec<RenderLight>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RenderPreference {
+    #[default]
+    Auto,
+    CpuIndirect,
+    GpuDriven,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RenderCapabilities {
+    pub compute: bool,
+    pub storage_buffers: bool,
+    pub indirect_draw: bool,
+}
+
+impl RenderCapabilities {
+    pub fn from_adapter(adapter: &wgpu::Adapter) -> Self {
+        let flags = adapter.get_downlevel_capabilities().flags;
+        let limits = adapter.limits();
+        Self {
+            compute: flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+                && limits.max_compute_workgroup_size_x >= 64
+                && limits.max_compute_invocations_per_workgroup >= 64
+                && limits.max_storage_buffers_per_shader_stage >= 3,
+            storage_buffers: flags.contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
+                && limits.max_storage_buffers_per_shader_stage >= 1,
+            indirect_draw: flags.contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION),
+        }
+    }
+    pub const fn supports_gpu_driven(self) -> bool {
+        self.compute && self.storage_buffers && self.indirect_draw
+    }
+}
+
+impl RenderPreference {
+    /// Resolve the preference without creating a device, including adapter-free diagnostics.
+    pub fn select(self, capabilities: RenderCapabilities) -> EngineResult<RenderPath> {
+        match self {
+            Self::Auto if capabilities.supports_gpu_driven() => Ok(RenderPath::GpuDriven),
+            Self::Auto | Self::CpuIndirect => Ok(RenderPath::Indirect),
+            Self::GpuDriven if capabilities.supports_gpu_driven() => Ok(RenderPath::GpuDriven),
+            Self::GpuDriven => Err(EngineError::Unsupported(
+                "GpuDriven requires compute, vertex storage buffers and indirect execution".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -245,17 +309,19 @@ pub struct IndirectDrawIndexedArgs {
 /// optional GPU-driven path. Bounds are expressed in local mesh space.
 pub fn sphere_visible(view_projection: Mat4, transform: TransformState, bounds: [f32; 4]) -> bool {
     let center = transform_matrix(transform)
-        * qst_core::glam::Vec4::from_array([bounds[0], bounds[1], bounds[2], 1.0]);
-    let clip = view_projection * center;
+        * qst_core::glam::Vec4::new(bounds[0], bounds[1], bounds[2], 1.0);
     let radius = bounds[3].abs() * transform.scale.abs().max_element();
-    let margin = radius.max(0.001) * clip.w.abs().max(1.0);
-    clip.w > 0.0
-        && clip.x >= -clip.w - margin
-        && clip.x <= clip.w + margin
-        && clip.y >= -clip.w - margin
-        && clip.y <= clip.w + margin
-        && clip.z >= -margin
-        && clip.z <= clip.w + margin
+    let rows = view_projection.transpose();
+    [
+        rows.w_axis + rows.x_axis,
+        rows.w_axis - rows.x_axis,
+        rows.w_axis + rows.y_axis,
+        rows.w_axis - rows.y_axis,
+        rows.z_axis,
+        rows.w_axis - rows.z_axis,
+    ]
+    .iter()
+    .all(|plane| plane.dot(center) >= -radius * plane.truncate().length())
 }
 
 fn transform_matrix(transform: TransformState) -> Mat4 {
@@ -289,7 +355,15 @@ pub trait RenderFeature: Send {
         Ok(())
     }
     fn queue(&mut self, _snapshot: &RenderSnapshot) {}
+    fn compute<'a>(&'a self, _node: &str, _pass: &mut wgpu::ComputePass<'a>) {}
     fn render<'a>(&'a self, _pass: &mut wgpu::RenderPass<'a>) {}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderExecution {
+    Prepare,
+    Compute,
+    Render,
 }
 
 #[derive(Clone, Debug)]
@@ -297,12 +371,14 @@ pub struct RenderNode {
     pub name: String,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
+    pub execution: RenderExecution,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompiledRenderGraph {
     pub order: Vec<String>,
     pub resources: Vec<String>,
+    pub steps: Vec<(String, RenderExecution)>,
 }
 
 #[derive(Default)]
@@ -321,8 +397,19 @@ impl RenderGraph {
         reads: impl IntoIterator<Item = impl Into<String>>,
         writes: impl IntoIterator<Item = impl Into<String>>,
     ) {
+        self.add_typed_pass(name, RenderExecution::Render, reads, writes);
+    }
+
+    pub fn add_typed_pass(
+        &mut self,
+        name: impl Into<String>,
+        execution: RenderExecution,
+        reads: impl IntoIterator<Item = impl Into<String>>,
+        writes: impl IntoIterator<Item = impl Into<String>>,
+    ) {
         self.add(RenderNode {
             name: name.into(),
+            execution,
             reads: reads.into_iter().map(Into::into).collect(),
             writes: writes.into_iter().map(Into::into).collect(),
         });
@@ -399,23 +486,54 @@ impl RenderGraph {
             ));
         }
         Ok(CompiledRenderGraph {
+            steps: order
+                .iter()
+                .map(|name| {
+                    (
+                        name.clone(),
+                        self.nodes
+                            .iter()
+                            .find(|node| &node.name == name)
+                            .expect("compiled node")
+                            .execution,
+                    )
+                })
+                .collect(),
             order,
             resources: resources.into_iter().collect(),
         })
     }
 
     pub fn default_forward() -> Self {
+        Self::for_path(RenderPath::GpuDriven)
+    }
+
+    pub fn for_path(path: RenderPath) -> Self {
         let mut graph = Self::default();
-        graph.add_pass("depth", std::iter::empty::<&str>(), ["depth"]);
-        graph.add_pass(
-            "gpu_cull",
+        graph.add_typed_pass(
+            "depth",
+            RenderExecution::Prepare,
+            std::iter::empty::<&str>(),
             ["depth"],
-            ["visible_instances", "indirect_args"],
         );
-        graph.add_pass("skinning", ["visible_instances"], ["skinned_vertices"]);
-        graph.add_pass(
+        if path == RenderPath::GpuDriven {
+            graph.add_typed_pass(
+                "gpu_cull",
+                RenderExecution::Compute,
+                ["depth"],
+                ["visible_instances", "indirect_args"],
+            );
+        }
+        graph.add_typed_pass(
+            "skinning",
+            RenderExecution::Prepare,
+            ["depth", "visible_instances"],
+            ["joint_matrices"],
+        );
+        graph.add_typed_pass(
             "forward",
-            ["depth", "indirect_args", "skinned_vertices"],
+            RenderExecution::Render,
+            ["depth", "indirect_args", "joint_matrices"],
             ["color"],
         );
         graph
@@ -450,7 +568,5 @@ use forward::ForwardFeature;
 pub use forward::GpuCullingConfig;
 pub use forward::RenderStats;
 pub use renderer::Renderer;
-#[cfg(test)]
-use renderer::depth_view;
 #[cfg(test)]
 mod tests;

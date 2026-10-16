@@ -66,6 +66,14 @@ pub struct FrameDiagnostics {
     #[serde(default)]
     pub indirect_draw_calls: usize,
     #[serde(default)]
+    pub gpu_cull_dispatches: usize,
+    #[serde(default)]
+    pub gpu_skinned_instances: usize,
+    #[serde(default)]
+    pub skin_fallbacks: usize,
+    #[serde(default)]
+    pub gpu_visibility_pending: bool,
+    #[serde(default)]
     pub gpu_cull_seconds: f32,
     #[serde(default)]
     pub skinning_seconds: f32,

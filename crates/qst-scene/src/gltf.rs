@@ -32,11 +32,11 @@ pub struct ImportedMesh {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportedSkin {
     pub name: String,
-    pub joints: Vec<usize>,
+    pub joints: Vec<EntityId>,
     #[serde(default)]
     pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
     #[serde(default)]
-    pub skeleton: Option<usize>,
+    pub skeleton: Option<EntityId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,9 +74,10 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
         textures: Vec::new(),
         animations: Vec::new(),
     };
+    let mut pending_skins = Vec::new();
     for skin in document.skins() {
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
-        let inverse_bind_matrices = reader
+        let inverse_bind_matrices: Vec<[[f32; 4]; 4]> = reader
             .read_inverse_bind_matrices()
             .map(|matrices| {
                 matrices
@@ -84,15 +85,12 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
                     .collect()
             })
             .unwrap_or_default();
-        result.skins.push(ImportedSkin {
-            name: skin
-                .name()
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("gltf_skin_{}", skin.index())),
-            joints: skin.joints().map(|joint| joint.index()).collect(),
+        pending_skins.push((
+            skin_name(&skin),
+            skin.joints().map(|joint| joint.index()).collect::<Vec<_>>(),
             inverse_bind_matrices,
-            skeleton: skin.skeleton().map(|node| node.index()),
-        });
+            skin.skeleton().map(|node| node.index()),
+        ));
     }
     for image in document.images() {
         let Some(data) = images.get(image.index()) else {
@@ -122,6 +120,42 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
             )?;
         }
     }
+    result.skins = pending_skins
+        .into_iter()
+        .map(|(name, joints, mut inverse_bind_matrices, skeleton)| {
+            let resolve = |node: usize| {
+                node_entities.get(&node).copied().ok_or_else(|| {
+                    EngineError::Unsupported(format!(
+                        "skin {name} references node {node} outside the imported scene"
+                    ))
+                })
+            };
+            let joints = joints
+                .into_iter()
+                .map(resolve)
+                .collect::<EngineResult<Vec<_>>>()?;
+            if inverse_bind_matrices.is_empty() {
+                inverse_bind_matrices = vec![Mat4::IDENTITY.to_cols_array_2d(); joints.len()];
+            }
+            let skeleton = skeleton.map(resolve).transpose()?;
+            Ok(ImportedSkin {
+                name,
+                joints,
+                inverse_bind_matrices,
+                skeleton,
+            })
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
+    result.scene.skins = result
+        .skins
+        .iter()
+        .map(|skin| SceneSkin {
+            name: skin.name.clone(),
+            joints: skin.joints.clone(),
+            inverse_bind_matrices: skin.inverse_bind_matrices.clone(),
+            skeleton: skin.skeleton,
+        })
+        .collect();
     for animation in document.animations() {
         let mut samplers = Vec::new();
         let mut channels = Vec::new();
@@ -202,11 +236,12 @@ pub fn import_gltf(path: impl AsRef<Path>) -> EngineResult<GltfImport> {
             channels,
         });
     }
+    result.scene.validate_skins()?;
     Ok(result)
 }
 
-const IMPORTER_VERSION: u32 = 3;
-const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF2";
+const IMPORTER_VERSION: u32 = 4;
+const CACHE_MAGIC: &[u8; 8] = b"QSTGLTF3";
 
 #[derive(Serialize, Deserialize)]
 struct CacheEnvelope {
@@ -305,16 +340,16 @@ fn append_node(
     buffers: &[::gltf::buffer::Data],
     node: &::gltf::Node<'_>,
     parent_transform: Mat4,
-    parent_index: Option<usize>,
+    parent_id: Option<EntityId>,
     node_entities: &mut HashMap<usize, EntityId>,
 ) -> EngineResult<()> {
     let local = Mat4::from_cols_array_2d(&node.transform().matrix());
     let world = parent_transform * local;
     let (scale, rotation, translation) = local.to_scale_rotation_translation();
     let mut entity = SceneEntity {
-        id: EntityId::new(result.scene.entities.len() as u64 + 1),
+        id: EntityId::new(node.index() as u64 + 1),
         name: node.name().unwrap_or("Node").into(),
-        parent: parent_index.map(|index| EntityId::new(index as u64 + 1)),
+        parent: parent_id,
         transform: TransformState {
             translation,
             rotation,
@@ -322,16 +357,13 @@ fn append_node(
         },
         ..SceneEntity::default()
     };
+    entity.local_transform = entity.transform;
     if let Some(skin) = node.skin() {
         entity.skin = Some(SkinBinding {
             skeleton: skin
                 .skeleton()
                 .map(|skeleton| format!("node:{}", skeleton.index())),
-            skin: Some(
-                skin.name()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("gltf_skin_{}", skin.index())),
-            ),
+            skin: Some(skin_name(&skin)),
         });
     }
     if let Some(camera) = node.camera()
@@ -343,9 +375,10 @@ fn append_node(
             far: p.zfar().unwrap_or(1000.0),
         });
     }
-    let node_index = result.scene.entities.len();
+    let node_id = entity.id;
+    let node_skin = entity.skin.clone();
     result.scene.entities.push(entity);
-    node_entities.insert(node.index(), EntityId::new(node_index as u64 + 1));
+    node_entities.insert(node.index(), node_id);
     if let Some(mesh) = node.mesh() {
         for (primitive_index, primitive) in mesh.primitives().enumerate() {
             if primitive.mode() != ::gltf::mesh::Mode::Triangles {
@@ -410,6 +443,18 @@ fn append_node(
             let normal_texture = material
                 .normal_texture()
                 .map(|texture| texture_name(texture.texture().source().index()));
+            let mut min = qst_core::glam::Vec3::splat(f32::INFINITY);
+            let mut max = qst_core::glam::Vec3::splat(f32::NEG_INFINITY);
+            for position in &positions {
+                let p = qst_core::glam::Vec3::from_array(*position);
+                min = min.min(p);
+                max = max.max(p);
+            }
+            let center = (min + max) * 0.5;
+            let bounds = RenderBounds {
+                center: center.to_array(),
+                radius: (max - center).length(),
+            };
             result.meshes.push(ImportedMesh {
                 name: name.clone(),
                 positions,
@@ -427,32 +472,29 @@ fn append_node(
                 normal_texture,
             });
             result.scene.entities.push(SceneEntity {
-                id: EntityId::new(result.scene.entities.len() as u64 + 1),
+                id: EntityId::new(
+                    (1_u64 << 63) | ((node.index() as u64) << 32) | primitive_index as u64,
+                ),
                 name: format!(
                     "{} primitive {}",
                     mesh.name().unwrap_or("Mesh"),
                     primitive_index
                 ),
-                parent: Some(EntityId::new(node_index as u64 + 1)),
+                parent: Some(node_id),
                 transform: TransformState::identity(),
                 local_transform: TransformState::identity(),
                 mesh: Some(MeshRenderer {
                     mesh: name.clone(),
                     material: name,
                 }),
+                skin: node_skin.clone(),
+                render_bounds: Some(bounds),
                 ..SceneEntity::default()
             });
         }
     }
     for child in node.children() {
-        append_node(
-            result,
-            buffers,
-            &child,
-            world,
-            Some(node_index),
-            node_entities,
-        )?;
+        append_node(result, buffers, &child, world, Some(node_id), node_entities)?;
     }
     Ok(())
 }
@@ -503,4 +545,54 @@ fn image_to_rgba8(data: &::gltf::image::Data) -> EngineResult<Vec<u8>> {
         }
     }
     Ok(rgba)
+}
+
+fn skin_name(skin: &::gltf::Skin<'_>) -> String {
+    format!(
+        "gltf_skin_{}:{}",
+        skin.index(),
+        skin.name().unwrap_or("Skin")
+    )
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn previous_importer_cache_and_corrupt_cache_are_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("quasar-skin-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/tests");
+        for name in ["animated-skin.gltf", "animated-skin.bin"] {
+            std::fs::copy(fixture.join(name), dir.join(name)).unwrap();
+        }
+        let path = dir.join("animated-skin.gltf");
+        assert!(!import_gltf_cached(&path).unwrap().1);
+        assert!(import_gltf_cached(&path).unwrap().1);
+        let cache = std::fs::read_dir(dir.join(".quasar/cache"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let bytes = std::fs::read(&cache).unwrap();
+        let (mut envelope, _) = bincode::serde::decode_from_slice::<CacheEnvelope, _>(
+            &bytes,
+            bincode::config::standard(),
+        )
+        .unwrap();
+        envelope.importer_version -= 1;
+        envelope.magic = *b"QSTGLTF2";
+        std::fs::write(
+            &cache,
+            bincode::serde::encode_to_vec(&envelope, bincode::config::standard()).unwrap(),
+        )
+        .unwrap();
+        assert!(!import_gltf_cached(&path).unwrap().1);
+        std::fs::write(&cache, b"broken cache").unwrap();
+        assert!(!import_gltf_cached(&path).unwrap().1);
+        assert!(import_gltf_cached(&path).unwrap().1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -2701,7 +2701,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "playground"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "qst-engine",
 ]
@@ -2814,7 +2814,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qst-asset"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "notify",
  "qst-core",
@@ -2824,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "qst-audio"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "qst-core",
  "rodio",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "qst-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "glam 0.30.10",
  "serde",
@@ -2841,7 +2841,7 @@ dependencies = [
 
 [[package]]
 name = "qst-ecs"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bevy_ecs",
  "qst-core",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "qst-editor"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "qst-engine"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "pollster",
  "qst-asset",
@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "qst-input"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bevy_ecs",
  "qst-core",
@@ -2892,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "qst-physics"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "qst-core",
  "qst-ecs",
@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "qst-render"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bytemuck",
  "image",
@@ -2915,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "qst-scene"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "base64 0.22.1",
  "bevy_ecs",

@@ -1,5 +1,119 @@
 use super::*;
 
+#[test]
+fn animated_gltf_survives_save_load_and_produces_interpolated_palettes() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/tests/animated-skin.gltf");
+    let mut app = EngineApp::new();
+    app.import_gltf(&fixture).unwrap();
+    assert_eq!(app.textured_meshes.len(), 2);
+    assert_eq!(app.scene.skins[0].joints, [EntityId::new(3)]);
+    app.fixed_time.step_seconds = 0.1;
+    app.update_fixed(std::time::Duration::from_millis(150));
+    let snapshot = app.render_snapshot();
+    assert_eq!(snapshot.instances.len(), 2);
+    assert_eq!(
+        snapshot.skins.len(),
+        1,
+        "primitive siblings share a palette"
+    );
+    let skin = &snapshot.skins[snapshot.instances[0].skin.unwrap() as usize];
+    // At t=0.1 the joint has moved 0.2; interpolation alpha=0.5 gives 0.1.
+    assert!((skin.matrices[0].w_axis.x - 0.1).abs() < 1e-5);
+    let reference = qst_render::skin_vertices(
+        &[qst_render::SkinnedVertex {
+            position: [-2.0, 0.0, 0.0],
+            joints: [0; 4],
+            weights: [1.0, 0.0, 0.0, 0.0],
+        }],
+        &skin.matrices,
+    );
+    assert!((reference[0][0] + 1.9).abs() < 1e-5);
+    let cloned = snapshot.clone();
+    assert!(Arc::ptr_eq(
+        &cloned.skins[0].matrices,
+        &snapshot.skins[0].matrices
+    ));
+
+    let path =
+        std::env::temp_dir().join(format!("quasar-animated-save-{}.ron", std::process::id()));
+    app.save_scene(&path).unwrap();
+    let mut restored = EngineApp::new();
+    restored.load_scene(&path).unwrap();
+    assert!(restored.animation_clips.contains_key("MoveJoint"));
+    restored.fixed_time.step_seconds = 0.1;
+    restored.update_fixed(std::time::Duration::from_millis(150));
+    assert!((restored.render_snapshot().skins[0].matrices[0].w_axis.x - 0.1).abs() < 1e-5);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn failed_skin_reload_preserves_previous_scene_and_resources() {
+    let mut app = EngineApp::new();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/tests/animated-skin.gltf");
+    app.import_gltf(&fixture).unwrap();
+    let mut invalid = qst_scene::import_gltf(&fixture).unwrap();
+    invalid.scene.skins[0].joints[0] = EntityId::new(999);
+    let previous = app.mesh_names.clone();
+    assert!(app.apply_gltf_import(invalid).is_err());
+    assert_eq!(app.mesh_names, previous);
+    assert_eq!(app.render_snapshot().instances.len(), 2);
+    assert_eq!(app.render_snapshot().skins.len(), 1);
+}
+
+#[test]
+fn palette_cancels_instance_world_and_reports_singular_fallback() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/tests/animated-skin.gltf");
+    let mut app = EngineApp::new();
+    app.import_gltf(&fixture).unwrap();
+    let root = app.scene_entities[app.scene.index_of(EntityId::new(1)).unwrap()];
+    let mesh = app.scene_entities[app.scene.index_of(EntityId::new(2)).unwrap()];
+    app.world
+        .get_mut::<LocalTransform>(root)
+        .unwrap()
+        .0
+        .translation
+        .x = 5.0;
+    app.world
+        .get_mut::<LocalTransform>(mesh)
+        .unwrap()
+        .0
+        .translation
+        .x = 2.0;
+    app.propagate_scene_hierarchy(true);
+    let snapshot = app.render_snapshot();
+    assert!((snapshot.skins[0].matrices[0].w_axis.x + 2.0).abs() < 1e-5);
+    assert_eq!(snapshot.instances[0].transform.translation.x, 7.0);
+    for (index, source) in app
+        .scene
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| source.mesh.is_some())
+    {
+        let entity = app.scene_entities[index];
+        let state = TransformState {
+            scale: glam::Vec3::ZERO,
+            ..source.local_transform
+        };
+        app.world.get_mut::<WorldTransform>(entity).unwrap().0 = state;
+        app.world
+            .get_mut::<PreviousWorldTransform>(entity)
+            .unwrap()
+            .0 = state;
+    }
+    let snapshot = app.render_snapshot();
+    assert_eq!(snapshot.skin_fallbacks, 2);
+    assert!(
+        snapshot
+            .instances
+            .iter()
+            .all(|instance| instance.skin.is_none())
+    );
+}
+
 fn hierarchy_scene() -> SceneAsset {
     let mut scene = SceneAsset::new("nested boxes");
     scene.entities = vec![

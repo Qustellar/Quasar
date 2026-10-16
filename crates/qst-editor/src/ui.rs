@@ -272,6 +272,17 @@ impl EditorPlugin {
                     "Assets {}  GPU {}",
                     diagnostics.loaded_asset_count, diagnostics.gpu_resource_count
                 ));
+                ui.label(format!(
+                    "{}  cull dispatches {}",
+                    diagnostics.render_path, diagnostics.gpu_cull_dispatches
+                ));
+                ui.label(format!(
+                    "Skinned {}  skin fallbacks {}",
+                    diagnostics.gpu_skinned_instances, diagnostics.skin_fallbacks
+                ));
+                if diagnostics.gpu_visibility_pending {
+                    ui.label("Visibility count on GPU");
+                }
                 if let Some(status) = &diagnostics.last_reload {
                     ui.label(status);
                 }
